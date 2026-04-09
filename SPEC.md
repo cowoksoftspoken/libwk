@@ -1,0 +1,333 @@
+# WK Image Format — Bitstream Specification v0.1
+
+**MIME type:** `image/x-wk`  
+**File extension:** `.wk`  
+**Byte order:** Little-endian throughout  
+**Format version:** 0x0001
+
+---
+
+## 1. File Structure
+
+A WK file consists of a fixed file header followed by a sequence of typed chunks.
+
+### 1.1 File Header
+
+| Offset | Size | Field         | Value           |
+|--------|------|---------------|-----------------|
+| 0      | 5    | Magic         | `0x57 0x4B 0x49 0x4D 0x47` ("WKIMG") |
+| 5      | 2    | Version       | `uint16 LE`, currently `0x0001` |
+
+### 1.2 Chunk Format
+
+Each chunk has the following structure:
+
+| Offset | Size | Field   | Description |
+|--------|------|---------|-------------|
+| 0      | 4    | Type    | 4 ASCII characters (e.g., "FHDR") |
+| 4      | 1    | Flags   | Bit field: bit0=optional, bit1=metadata-only, bit2=repeatable |
+| 5      | 4    | Size    | `uint32 LE` — payload length in bytes |
+| 9      | Size | Payload | Chunk-specific data |
+
+### 1.3 Chunk Order
+
+```
+FILE HEADER (magic + version)
+├── FHDR  — Frame Header (required, first after file header)
+├── META  — WKMETA structured metadata (optional)
+├── ICCP  — ICC color profile (optional)
+├── PROV  — C2PA manifest (optional)
+├── ANIM  — Animation header (present iff animated)
+├── TILE  — Tile data (one or more, repeatable)
+├── TILE  — ...
+└── FEND  — End marker (required, last, zero-byte payload)
+```
+
+---
+
+## 2. FHDR Chunk — Frame Header (20 bytes)
+
+| Offset | Size | Field          | Type    | Description |
+|--------|------|----------------|---------|-------------|
+| 0      | 4    | width          | uint32  | Image width in pixels |
+| 4      | 4    | height         | uint32  | Image height in pixels |
+| 8      | 1    | bit_depth      | uint8   | 8, 10, or 12 |
+| 9      | 1    | cicp_primaries | uint8   | ITU-T H.273 Table 2 |
+| 10     | 1    | cicp_transfer  | uint8   | ITU-T H.273 Table 3 (1=BT.709, 13=sRGB, 16=PQ, 18=HLG) |
+| 11     | 1    | cicp_matrix    | uint8   | ITU-T H.273 Table 4 |
+| 12     | 2    | flags          | uint16  | See flag bits below |
+| 14     | 1    | tile_size_log2 | uint8   | Tile size = 2^N, range 6..10 (64..1024) |
+| 15     | 2    | max_cll        | uint16  | MaxCLL in nits (0=unspecified) |
+| 17     | 2    | max_fall       | uint16  | MaxFALL in nits (0=unspecified) |
+
+### 2.1 FHDR Flags
+
+| Bit | Name           | Description |
+|-----|----------------|-------------|
+| 0   | LOSSLESS       | Image uses lossless coding |
+| 1   | ANIMATED       | File contains animation |
+| 2   | ALPHA          | Image has alpha channel |
+| 3   | HDR            | Bit depth > 8 or non-sRGB transfer |
+| 4   | TILED          | Image uses tile partitioning |
+| 5   | HAS_WKMETA     | META chunk present |
+| 6   | HAS_C2PA       | PROV chunk present |
+| 7   | FULL_RANGE     | Samples use full range (vs limited) |
+
+---
+
+## 3. TILE Chunk
+
+### 3.1 Tile Header (9 bytes)
+
+| Offset | Size | Field           | Type   |
+|--------|------|-----------------|--------|
+| 0      | 2    | tile_x          | uint16 |
+| 2      | 2    | tile_y          | uint16 |
+| 4      | 1    | layer_flags     | uint8  |
+| 5      | 4    | compressed_size | uint32 |
+
+`layer_flags`: bit0 = has base layer, bit1 = has refinement layers, bit2 = has alpha plane.
+
+### 3.2 Lossy Tile Payload
+
+1. **Quantization tables**: 64 x uint16 (luma) + 64 x uint16 (chroma)
+2. **Block dimensions**: blocks_x (uint16), blocks_y (uint16), chroma_blocks_x (uint16), chroma_blocks_y (uint16)
+3. **Prediction modes**: one uint8 per luma block (0..12)
+4. **rANS-coded coefficients**: per-coefficient-position encoding with frequency tables for Y, Cb, and Cr
+5. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, one uint8 prediction mode per luma block, and one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
+
+### 3.3 Lossless Tile Payload
+
+1. **Transform flags**: uint8 (bit0 = palette mode)
+2. **Predictor mode**: uint8 (0..12)
+3. **Per-channel data**: frequency table (256 × uint16) + rANS bitstream
+
+---
+
+## 4. ANIM Chunk — Animation
+
+| Offset | Size | Field           | Type   |
+|--------|------|-----------------|--------|
+| 0      | 4    | frame_count     | uint32 |
+| 4      | 2    | loop_count      | uint16 (0=infinite) |
+| 6      | 4    | background_rgba | uint32 |
+
+Followed by `frame_count` frame entries (14 bytes each):
+
+| Offset | Size | Field      | Type   |
+|--------|------|------------|--------|
+| 0      | 2    | delay_ms   | uint16 |
+| 2      | 1    | blend_mode | uint8 (0=OVER, 1=SOURCE) |
+| 3      | 1    | disposal   | uint8 (0=keep, 1=restore-bg) |
+| 4      | 2    | rect_x     | uint16 |
+| 6      | 2    | rect_y     | uint16 |
+| 8      | 2    | rect_w     | uint16 |
+| 10     | 2    | rect_h     | uint16 |
+| 12     | 4    | tile_offset| uint32 |
+
+---
+
+## 5. rANS Entropy Coding
+
+### 5.1 Parameters
+
+- State: 32-bit unsigned integer
+- Lower bound (L): 2^23 = 8388608
+- Byte emit/consume (b): 2^8 = 256
+- Upper bound: L × b = 2147483648
+- Precision: 12 bits (frequency table sums to 4096)
+
+### 5.2 Encoding
+
+```
+encode(state, freq, cum_freq):
+    upper_bound = (L * b / M) * freq
+    while state >= upper_bound:
+        emit(state & 0xFF)
+        state >>= 8
+    state = (state / freq) * M + (state % freq) + cum_freq
+```
+
+### 5.3 Decoding
+
+```
+decode(state, table):
+    cum_freq = state % M
+    symbol = lookup(cum_freq)  // binary search or table lookup
+    state = freq * (state / M) + (state % M) - sym.cum_freq
+    while state < L:
+        state = (state << 8) | read_byte()
+    return symbol
+```
+
+### 5.4 Frequency Normalization
+
+Frequencies are normalized to sum to M = 2^12 = 4096 using the FSE "spread" algorithm:
+1. Scale all counts proportionally
+2. Ensure every non-zero symbol gets freq ≥ 1
+3. Adjust the most frequent symbol to make the total exact
+
+### 5.5 Context Usage
+
+- **Lossy mode**: 64 separate rANS tables per plane (one per DCT coefficient position in zigzag order). 3 planes (Y, Cb, Cr) = 192 total contexts.
+- **Lossless mode**: Context hash from 3×3 pixel neighborhood (above, left, above-left). Up to 12 context sets via entropy image.
+
+---
+
+## 6. Intra Prediction Modes
+
+| Mode | Name    | Description |
+|------|---------|-------------|
+| 0    | DC      | Mean of 8 above + 8 left pixels |
+| 1    | V       | Copy above row |
+| 2    | H       | Copy left column |
+| 3    | TM      | left[r] + above[c] - above_left |
+| 4    | DC_LEFT | Mean of left column only |
+| 5    | DC_TOP  | Mean of above row only |
+| 6    | DC_128  | Mid-value constant (128/512/2048) |
+| 7    | D45     | 45° diagonal |
+| 8    | D135    | 135° diagonal |
+| 9    | D117    | ~117° vertical-right |
+| 10   | D153    | ~153° horizontal-down |
+| 11   | D207    | ~207° horizontal-up |
+| 12   | D63     | ~63° vertical-left |
+
+---
+
+## 7. WKMETA Chunk — Structured Metadata
+
+### 7.1 Envelope
+
+| Offset | Size | Field        | Type   |
+|--------|------|--------------|--------|
+| 0      | 1    | wkmeta_version | uint8 (= 0x01) |
+| 1      | 2    | entry_count  | uint16 |
+
+### 7.2 Entry Format
+
+| Offset | Size | Field        | Type   |
+|--------|------|--------------|--------|
+| 0      | 1    | namespace_id | uint8  |
+| 1      | 2    | tag_id       | uint16 |
+| 3      | 1    | type_id      | uint8  |
+| 4      | 4    | value_size   | uint32 |
+| 8      | N    | value        | value_size bytes |
+
+### 7.3 Namespace Table
+
+| ID   | Name     | Description |
+|------|----------|-------------|
+| 0x01 | CAPTURE  | Camera/capture device parameters |
+| 0x02 | GEO      | Geographic location and motion |
+| 0x03 | TIME     | Temporal metadata |
+| 0x04 | RIGHTS   | Copyright, licensing, attribution |
+| 0x05 | CONTENT  | Semantic content description |
+| 0x06 | ANIM     | Animation-level metadata |
+| 0x07 | REGION   | Spatial regions of interest |
+| 0x08 | DEVICE   | Device and software environment |
+| 0x09 | RATING   | Quality, audience, content ratings |
+| 0x0A | CUSTOM   | Application-defined |
+| 0x0B | PROV_REF | Reference into PROV chunk |
+
+### 7.4 Type Table
+
+| ID   | Name     | Size | Description |
+|------|----------|------|-------------|
+| 0x01 | UINT8    | 1    | Unsigned 8-bit |
+| 0x02 | UINT16   | 2    | Unsigned 16-bit LE |
+| 0x03 | UINT32   | 4    | Unsigned 32-bit LE |
+| 0x04 | UINT64   | 8    | Unsigned 64-bit LE |
+| 0x05 | INT32    | 4    | Signed 32-bit LE |
+| 0x06 | FLOAT32  | 4    | IEEE 754 single |
+| 0x07 | FLOAT64  | 8    | IEEE 754 double |
+| 0x08 | RATIONAL | 8    | 2× INT32 (num, den) |
+| 0x09 | LSTR     | var  | BCP-47 tag (uint8 len + bytes) + UTF-8 text |
+| 0x0A | STR      | var  | UTF-8 string, no null terminator |
+| 0x0B | BYTES    | var  | Raw byte array |
+| 0x0C | ARRAY    | var  | uint16 count + uint8 element_type + elements |
+| 0x0D | STRUCT   | var  | uint16 field_count + nested entries |
+| 0x0E | TS64     | 8    | Unix timestamp, microseconds, uint64 |
+| 0x0F | UUID     | 16   | RFC 4122 UUID |
+
+### 7.5 GEO Namespace Tags
+
+| Tag    | Name          | Type    | Description |
+|--------|---------------|---------|-------------|
+| 0x0001 | GEO_LAT       | FLOAT64 | WGS-84 latitude (+N, decimal degrees) |
+| 0x0002 | GEO_LON       | FLOAT64 | WGS-84 longitude (+E, decimal degrees) |
+| 0x0003 | GEO_ALT       | FLOAT32 | Altitude metres above WGS-84 ellipsoid |
+| 0x0004 | GEO_HPOS_ERR  | FLOAT32 | Horizontal positioning error 1σ metres |
+| 0x0005 | GEO_VPOS_ERR  | FLOAT32 | Vertical positioning error 1σ metres |
+| 0x0006 | GEO_SPEED     | FLOAT32 | Ground speed m/s |
+| 0x0007 | GEO_HEADING   | FLOAT32 | True heading 0..360° |
+| 0x0008 | GEO_PITCH     | FLOAT32 | Device pitch -90..+90° |
+| 0x0009 | GEO_ROLL      | FLOAT32 | Device roll -180..+180° |
+| 0x000A | GEO_COUNTRY   | STR     | ISO 3166-1 alpha-2 |
+| 0x000B | GEO_REGION    | STR     | ISO 3166-2 code |
+| 0x000C | GEO_CITY      | LSTR    | City name (localized) |
+| 0x000D | GEO_SUBLOC    | LSTR    | Sub-location |
+| 0x000E | GEO_PLACE_NAME| LSTR    | Human-readable place name |
+| 0x000F | GEO_WHAT3WORDS| STR     | what3words address |
+| 0x0010 | GEO_PLUS_CODE | STR     | Open Location Code |
+| 0x0011 | GEO_CAPTURE_TS| TS64    | UTC capture timestamp |
+| 0x0012 | GEO_DEST_LAT  | FLOAT64 | Destination latitude |
+| 0x0013 | GEO_DEST_LON  | FLOAT64 | Destination longitude |
+
+*(Complete tag listings for all namespaces follow the same pattern as documented in wkmeta.hpp)*
+
+---
+
+## 8. DCT and Quantization
+
+### 8.1 Transform
+
+8×8 block DCT using AAN fast algorithm (5 multiplications, 29 additions per 1D pass).
+2D separable: rows then columns (forward), columns then rows (inverse).
+
+### 8.2 Quantization
+
+64-element per-frequency tables derived from JPEG base tables with quality scaling:
+- Quality < 50: scale = 5000 / quality
+- Quality ≥ 50: scale = 200 - 2 × quality
+- Bit depth scaling: Q10 = Q8 × 4, Q12 = Q8 × 16
+- Deadzone: |coefficient| < 0.5 × step → 0
+
+### 8.3 Zigzag Scan
+
+Standard JPEG 8×8 zigzag order for coefficient serialization.
+
+---
+
+## 9. Color Space
+
+### 9.1 RGB ↔ YCbCr
+
+Matrix selection via CICP matrix coefficient (H.273 Table 4):
+- 1: BT.709
+- 5/6: BT.601
+- 9: BT.2020
+
+### 9.2 Transfer Functions
+
+- PQ (CICP 16): exact ST 2084 EOTF/OETF
+- HLG (CICP 18): exact BT.2100 HLG OETF/inverse OETF
+- BT.709 (CICP 1): standard gamma
+- sRGB (CICP 13): piecewise linear/power
+
+### 9.3 HDR Pipeline
+
+All HDR data stored as uint16_t. PQ/HLG EOTF applied to linearize before color transform; OETF applied after reconstruction.
+
+---
+
+## 10. Conformance
+
+A conforming decoder MUST:
+1. Validate the magic number and version
+2. Parse FHDR before any other chunks
+3. Ignore unknown optional chunks (flag bit0 set)
+4. Reject unknown required chunks
+5. Support all 13 prediction modes
+6. Implement rANS decoding with the specified parameters
+7. Preserve unknown WKMETA entries on round-trip
+8. Never crash or invoke UB on malformed input
