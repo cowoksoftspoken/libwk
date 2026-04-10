@@ -127,7 +127,7 @@ void print_usage() {
         << "  --tile-size N           Tile size in pixels (64..1024, power of two)\n"
         << "  --threads N             Thread count (0 = auto)\n"
         << "  --target-ssimulacra2 N  Target SSIMULACRA2 score\n"
-        << "  --yuv444                Use 4:4:4 chroma\n"
+        << "  --yuv444                Use 4:4:4 chroma (default)\n"
         << "  --yuv420                Use 4:2:0 chroma\n"
         << "  --import-exif FILE      Import EXIF from JPEG/TIFF donor file\n"
         << "  --version               Print version\n"

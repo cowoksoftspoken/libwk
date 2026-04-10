@@ -85,7 +85,7 @@ struct EncoderConfig {
     float        quality             = 75.0f;
     bool         lossless            = false;
     BitDepth     bit_depth           = BitDepth::Bits8;
-    Subsampling  subsampling         = Subsampling::YUV420;
+    Subsampling  subsampling         = Subsampling::YUV444;
     CICP         cicp                = {};
     uint8_t      tile_size_log2      = 9;
     uint32_t     threads             = 0;

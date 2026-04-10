@@ -149,10 +149,34 @@ void subsample_420(const int16_t* in, int16_t* out,
 void upsample_420(const int16_t* in, int16_t* out,
                    uint32_t width, uint32_t height) {
     const uint32_t in_w = (width + 1) / 2;
+    const uint32_t in_h = (height + 1) / 2;
+
+    auto sample = [&](int x, int y) -> int16_t {
+        x = std::clamp(x, 0, static_cast<int>(in_w) - 1);
+        y = std::clamp(y, 0, static_cast<int>(in_h) - 1);
+        return in[static_cast<size_t>(y) * in_w + static_cast<size_t>(x)];
+    };
 
     for (uint32_t row = 0; row < height; ++row) {
+        const double src_y = static_cast<double>(row) * 0.5 - 0.25;
+        const int y0 = static_cast<int>(std::floor(src_y));
+        const int y1 = y0 + 1;
+        const double ty = src_y - static_cast<double>(y0);
+
         for (uint32_t col = 0; col < width; ++col) {
-            out[row * width + col] = in[(row / 2) * in_w + (col / 2)];
+            const double src_x = static_cast<double>(col) * 0.5 - 0.25;
+            const int x0 = static_cast<int>(std::floor(src_x));
+            const int x1 = x0 + 1;
+            const double tx = src_x - static_cast<double>(x0);
+
+            const double s00 = static_cast<double>(sample(x0, y0));
+            const double s10 = static_cast<double>(sample(x1, y0));
+            const double s01 = static_cast<double>(sample(x0, y1));
+            const double s11 = static_cast<double>(sample(x1, y1));
+
+            const double top = s00 + (s10 - s00) * tx;
+            const double bottom = s01 + (s11 - s01) * tx;
+            out[static_cast<size_t>(row) * width + col] = static_cast<int16_t>(std::lround(top + (bottom - top) * ty));
         }
     }
 }

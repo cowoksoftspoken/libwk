@@ -1,4 +1,4 @@
-﻿
+
 #include "common.h"
 #include "container.h"
 #include "rans.h"
@@ -655,7 +655,7 @@ void wk_encoder_config_init(wk_encoder_config_t* config) {
     config->tile_size_log2 = 9;
     config->threads = 0;
     config->target_ssimulacra2 = 0.0f;
-    config->chroma_subsampling = 1;
+    config->chroma_subsampling = 0;
     config->full_range = 1;
 }
 
