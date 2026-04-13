@@ -89,8 +89,20 @@ static Result<TileEncodeResult> encode_lossy_tile(
     uint32_t blocks_y = (th + 7) / 8;
 
     QuantTable quant_y, quant_c, quant_a;
+    float chroma_quality = quality;
+    if (subsampling == ChromaSubsampling::YUV444) {
+        float chroma_boost = 8.0f;
+        if (quality >= 90.0f) {
+            chroma_boost = 2.0f;
+        } else if (quality >= 85.0f) {
+            chroma_boost = 4.0f;
+        } else if (quality >= 75.0f) {
+            chroma_boost = 6.0f;
+        }
+        chroma_quality = std::min(100.0f, quality + chroma_boost);
+    }
     quant_y.build(quality, false, bit_depth);
-    quant_c.build(quality, true, bit_depth);
+    quant_c.build(chroma_quality, true, bit_depth);
     if (has_alpha) {
         quant_a.build(std::min(100.0f, quality + 10.0f), false, bit_depth);
     }

@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.28)
 project(wk VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -53,6 +53,10 @@ wk_copy_windows_runtime(wkenc)
 add_executable(wkdec tools/wkdec.cpp)
 target_link_libraries(wkdec PRIVATE wk)
 wk_copy_windows_runtime(wkdec)
+
+add_executable(wkmetric tools/wkmetric.cpp)
+target_link_libraries(wkmetric PRIVATE wk)
+wk_copy_windows_runtime(wkmetric)
 
 add_executable(wkmeta-dump tools/wkmeta_dump.cpp)
 target_link_libraries(wkmeta-dump PRIVATE wk)
@@ -114,4 +118,5 @@ if(WK_BUILD_TESTS)
     wk_add_test(container_test tests/container_test.cpp)
     wk_add_test(dct_test tests/dct_test.cpp)
     wk_add_test(predict_test tests/predict_test.cpp)
+    wk_add_test(metrics_test tests/metrics_test.cpp)
 endif()

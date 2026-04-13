@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
 export PATH="/c/msys64/ucrt64/bin:$PATH"
 
 INPUT_JPG="photos/1230927884722.jpg"
@@ -27,6 +31,7 @@ echo "=== Lossy JPEG -> WK ==="
 ./build/wkenc.exe --quality 75 "$INPUT_JPG" "$WK_LOSSY"
 ./build/wkdec.exe --info "$WK_LOSSY"
 ./build/wkdec.exe "$WK_LOSSY" "$DECODED_LOSSY"
+./build/wkmetric.exe "$INPUT_JPG" "$WK_LOSSY"
 
 echo "=== Metadata Edit / Export ==="
 ./build/wkmeta-edit.exe --set CONTENT.TITLE "en:Test Photo" --set GEO.LAT 1.23 "$WK_LOSSY"

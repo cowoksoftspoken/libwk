@@ -1,0 +1,32 @@
+[
+    {
+        "image":  "1230927884722.jpg",
+        "profile":  "q75_yuv444",
+        "source_bytes":  12462,
+        "wk_bytes":  22931,
+        "size_ratio":  1.8401,
+        "mae":  3.9786,
+        "psnr":  33.2244,
+        "ssim":  0.964495
+    },
+    {
+        "image":  "20981203812.jpg",
+        "profile":  "q75_yuv444",
+        "source_bytes":  26160,
+        "wk_bytes":  55845,
+        "size_ratio":  2.1347,
+        "mae":  1.7362,
+        "psnr":  38.5048,
+        "ssim":  0.969242
+    },
+    {
+        "image":  "2334937028374.jpg",
+        "profile":  "q75_yuv444",
+        "source_bytes":  6072,
+        "wk_bytes":  15027,
+        "size_ratio":  2.4748,
+        "mae":  2.4685,
+        "psnr":  36.7448,
+        "ssim":  0.972182
+    }
+]

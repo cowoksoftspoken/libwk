@@ -5,39 +5,13 @@
 #include "../src/common.h"
 #include "../src/container.h"
 #include "../src/image_io.h"
+#include "../src/metrics.h"
 #include <cmath>
 #include <filesystem>
 
 using namespace wk;
 
 namespace {
-
-double compute_psnr(const uint8_t* a, const uint8_t* b, size_t count, int max_val = 255) {
-    double mse = 0.0;
-    for (size_t i = 0; i < count; ++i) {
-        const double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
-        mse += diff * diff;
-    }
-    mse /= static_cast<double>(count);
-    if (mse < 1e-10) {
-        return 100.0;
-    }
-    return 10.0 * std::log10(static_cast<double>(max_val * max_val) / mse);
-}
-
-double compute_channel_psnr(const uint8_t* a, const uint8_t* b, size_t pixel_count, size_t channel_index, size_t channels, int max_val = 255) {
-    double mse = 0.0;
-    for (size_t i = 0; i < pixel_count; ++i) {
-        const double diff = static_cast<double>(a[i * channels + channel_index]) -
-                            static_cast<double>(b[i * channels + channel_index]);
-        mse += diff * diff;
-    }
-    mse /= static_cast<double>(pixel_count);
-    if (mse < 1e-10) {
-        return 100.0;
-    }
-    return 10.0 * std::log10(static_cast<double>(max_val * max_val) / mse);
-}
 
 Image make_rgb_gradient(uint32_t width, uint32_t height) {
     Image image(width, height, BitDepth::Bits8, false);
@@ -108,8 +82,40 @@ TEST(RoundtripTest, LossySolidColor) {
     EXPECT_EQ(decoded->width(), 64u);
     EXPECT_EQ(decoded->height(), 64u);
 
-    const double psnr = compute_psnr(image.pixels().data(), decoded->pixels().data(), image.pixels().size());
-    EXPECT_GT(psnr, 25.0) << "PSNR too low: " << psnr;
+    auto metrics = wk::metrics::compare_images(image, *decoded);
+    ASSERT_TRUE(metrics.has_value()) << "metrics compare failed: " << metrics.error().message;
+    EXPECT_GT(metrics->psnr, 25.0) << "PSNR too low: " << metrics->psnr;
+    EXPECT_GT(metrics->ssim, 0.95) << "SSIM too low: " << metrics->ssim;
+}
+
+TEST(RoundtripTest, HigherLossyQualityTradesSizeForQuality) {
+    Image image = make_rgb_gradient(192, 192);
+
+    EncoderConfig config75;
+    config75.quality = 75.0f;
+    config75.subsampling = Subsampling::YUV444;
+
+    EncoderConfig config85;
+    config85.quality = 85.0f;
+    config85.subsampling = Subsampling::YUV444;
+
+    auto encoded75 = encode(image, config75);
+    ASSERT_TRUE(encoded75.has_value()) << encoded75.error().message;
+    auto decoded75 = decode(*encoded75);
+    ASSERT_TRUE(decoded75.has_value()) << decoded75.error().message;
+    auto metrics75 = wk::metrics::compare_images(image, *decoded75);
+    ASSERT_TRUE(metrics75.has_value()) << "metrics compare failed: " << metrics75.error().message;
+
+    auto encoded85 = encode(image, config85);
+    ASSERT_TRUE(encoded85.has_value()) << encoded85.error().message;
+    auto decoded85 = decode(*encoded85);
+    ASSERT_TRUE(decoded85.has_value()) << decoded85.error().message;
+    auto metrics85 = wk::metrics::compare_images(image, *decoded85);
+    ASSERT_TRUE(metrics85.has_value()) << "metrics compare failed: " << metrics85.error().message;
+
+    EXPECT_GT(encoded85->size(), encoded75->size());
+    EXPECT_GT(metrics85->psnr, metrics75->psnr + 0.5) << "Higher quality should increase PSNR";
+    EXPECT_GT(metrics85->ssim, metrics75->ssim) << "Higher quality should increase SSIM";
 }
 
 TEST(RoundtripTest, LossyTransparentAlphaRoundTrip) {
@@ -137,9 +143,9 @@ TEST(RoundtripTest, LossyTransparentAlphaRoundTrip) {
     EXPECT_EQ(decoded->width(), image.width());
     EXPECT_EQ(decoded->height(), image.height());
 
-    const size_t pixel_count = static_cast<size_t>(image.width()) * image.height();
-    const double alpha_psnr = compute_channel_psnr(image.pixels().data(), decoded->pixels().data(), pixel_count, 3, 4);
-    EXPECT_GT(alpha_psnr, 24.0) << "Alpha PSNR too low: " << alpha_psnr;
+    auto metrics = wk::metrics::compare_images(image, *decoded);
+    ASSERT_TRUE(metrics.has_value()) << "metrics compare failed: " << metrics.error().message;
+    EXPECT_GT(metrics->channels[3].psnr, 24.0) << "Alpha PSNR too low: " << metrics->channels[3].psnr;
 }
 
 TEST(RoundtripTest, LossyAlphaTileMismatchRejected) {
@@ -238,8 +244,10 @@ TEST(RoundtripTest, PhotoJpegPipelines) {
     EXPECT_EQ(decoded_lossy->width(), source->width());
     EXPECT_EQ(decoded_lossy->height(), source->height());
 
-    const double psnr = compute_psnr(source->pixels().data(), decoded_lossy->pixels().data(), source->pixels().size());
-    EXPECT_GT(psnr, 20.0) << "Photo JPEG lossy PSNR too low: " << psnr;
+    auto metrics = wk::metrics::compare_images(*source, *decoded_lossy);
+    ASSERT_TRUE(metrics.has_value()) << "metrics compare failed: " << metrics.error().message;
+    EXPECT_GT(metrics->psnr, 30.0) << "Photo JPEG lossy PSNR too low: " << metrics->psnr;
+    EXPECT_GT(metrics->ssim, 0.90) << "Photo JPEG lossy SSIM too low: " << metrics->ssim;
 #endif
 }
 
