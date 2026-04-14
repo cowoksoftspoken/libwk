@@ -49,6 +49,18 @@ static float compute_quality_score(const int16_t* original, const int16_t* recon
     return score;
 }
 
+static PredMode select_chroma_predictor_mode(bool has_above, bool has_left) {
+    if (has_above && has_left) {
+        return PredMode::DC;
+    }
+    if (has_above) {
+        return PredMode::DC_TOP;
+    }
+    if (has_left) {
+        return PredMode::DC_LEFT;
+    }
+    return PredMode::DC_128;
+}
 static std::vector<uint8_t> expand_rgb8_to_rgba8(const Image& image) {
     std::vector<uint8_t> expanded(static_cast<size_t>(image.width()) * image.height() * 4, 255);
     const auto pixels = image.pixels();
@@ -228,7 +240,9 @@ static Result<TileEncodeResult> encode_lossy_tile(
 
     auto encode_chroma_plane = [&](const int16_t* plane, std::vector<BlockData>& blocks,
                                     uint32_t ctw, uint32_t cth, uint32_t cbx, uint32_t cby) {
-        std::vector<int16_t> tile_plane(ctw * cth, max_val / 2);
+        const int16_t chroma_mid = static_cast<int16_t>((static_cast<int>(max_val) + 1) / 2);
+        std::vector<int16_t> tile_plane(ctw * cth, chroma_mid);
+        std::vector<int16_t> reconstructed_plane(ctw * cth, chroma_mid);
 
         uint32_t src_w = subsampling == ChromaSubsampling::YUV420 ? (image_width + 1) / 2 : image_width;
         uint32_t src_h = subsampling == ChromaSubsampling::YUV420 ? (image_height + 1) / 2 : image_height;
@@ -247,26 +261,80 @@ static Result<TileEncodeResult> encode_lossy_tile(
 
         for (uint32_t by = 0; by < cby; ++by) {
             for (uint32_t bx = 0; bx < cbx; ++bx) {
-                int16_t block_data[64] = {};
+                int16_t original_block[64] = {};
+                const uint32_t bx0 = bx * 8;
+                const uint32_t by0 = by * 8;
+
                 for (int r = 0; r < 8; ++r) {
                     for (int c = 0; c < 8; ++c) {
-                        uint32_t px = bx * 8 + c;
-                        uint32_t py = by * 8 + r;
+                        const uint32_t px = bx0 + c;
+                        const uint32_t py = by0 + r;
                         if (px < ctw && py < cth) {
-                            block_data[r * 8 + c] = tile_plane[py * ctw + px];
+                            original_block[r * 8 + c] = tile_plane[py * ctw + px];
                         }
                     }
                 }
 
+                int16_t above[8] = {};
+                int16_t left[8] = {};
+                int16_t above_left = chroma_mid;
+                const bool has_above = by > 0;
+                const bool has_left = bx > 0;
+
+                if (has_above) {
+                    for (int c = 0; c < 8; ++c) {
+                        const uint32_t px = bx0 + c;
+                        if (px < ctw) {
+                            above[c] = reconstructed_plane[(by0 - 1) * ctw + px];
+                        }
+                    }
+                }
+                if (has_left) {
+                    for (int r = 0; r < 8; ++r) {
+                        const uint32_t py = by0 + r;
+                        if (py < cth) {
+                            left[r] = reconstructed_plane[py * ctw + (bx0 - 1)];
+                        }
+                    }
+                }
+                if (has_above && has_left) {
+                    above_left = reconstructed_plane[(by0 - 1) * ctw + (bx0 - 1)];
+                }
+
                 auto& bd = blocks[by * cbx + bx];
-                bd.mode = PredMode::DC_128;
+                bd.mode = select_chroma_predictor_mode(has_above, has_left);
+
+                int16_t prediction[64];
+                predict_8x8(bd.mode, has_above ? above : nullptr,
+                            has_left ? left : nullptr, above_left, prediction, max_val);
+
+                int16_t residual_block[64];
+                for (int i = 0; i < 64; ++i) {
+                    residual_block[i] = original_block[i] - prediction[i];
+                }
 
                 DctBlock dct_coeffs;
                 for (int i = 0; i < 64; ++i) {
-                    dct_coeffs[i] = static_cast<float>(block_data[i] - max_val / 2);
+                    dct_coeffs[i] = static_cast<float>(residual_block[i]);
                 }
                 dct_2d_forward(dct_coeffs);
                 quant_c.quantize(dct_coeffs, bd.quantized);
+
+                DctBlock recon_dct;
+                quant_c.dequantize(bd.quantized, recon_dct);
+                dct_2d_inverse(recon_dct);
+
+                for (int r = 0; r < 8; ++r) {
+                    for (int c = 0; c < 8; ++c) {
+                        const uint32_t px = bx0 + c;
+                        const uint32_t py = by0 + r;
+                        if (px < ctw && py < cth) {
+                            const int value = static_cast<int>(std::round(recon_dct[r * 8 + c])) + prediction[r * 8 + c];
+                            reconstructed_plane[py * ctw + px] = static_cast<int16_t>(
+                                std::clamp(value, 0, static_cast<int>(max_val)));
+                        }
+                    }
+                }
             }
         }
     };

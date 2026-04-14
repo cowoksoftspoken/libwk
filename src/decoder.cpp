@@ -146,6 +146,18 @@ Result<ChromaSubsampling> infer_subsampling_from_tile(std::span<const uint8_t> t
     return geometry->subsampling;
 }
 
+PredMode select_chroma_predictor_mode(bool has_above, bool has_left) {
+    if (has_above && has_left) {
+        return PredMode::DC;
+    }
+    if (has_above) {
+        return PredMode::DC_TOP;
+    }
+    if (has_left) {
+        return PredMode::DC_LEFT;
+    }
+    return PredMode::DC_128;
+}
 Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
                                             uint16_t tile_x, uint16_t tile_y,
                                             uint32_t tile_size,
@@ -326,6 +338,7 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
 
     auto reconstruct_chroma = [&](const std::vector<DctBlockI16>& coeffs,
                                   std::vector<int16_t>& plane) {
+        const int16_t chroma_mid = static_cast<int16_t>((static_cast<int>(max_val) + 1) / 2);
         for (uint32_t by = 0; by < chroma_blocks_y; ++by) {
             for (uint32_t bx = 0; bx < chroma_blocks_x; ++bx) {
                 const size_t block_index = static_cast<size_t>(by) * chroma_blocks_x + bx;
@@ -335,12 +348,48 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
                 }
                 dct_2d_inverse(recon_dct);
 
+                const uint32_t bx0 = bx * 8;
+                const uint32_t by0 = by * 8;
+                int16_t above[8] = {};
+                int16_t left[8] = {};
+                int16_t above_left = chroma_mid;
+                const bool has_above = by > 0;
+                const bool has_left = bx > 0;
+
+                if (has_above) {
+                    for (int c = 0; c < 8; ++c) {
+                        const uint32_t px = bx0 + c;
+                        if (px < geometry->chroma_tw) {
+                            above[c] = plane[(by0 - 1) * geometry->chroma_tw + px];
+                        }
+                    }
+                }
+                if (has_left) {
+                    for (int r = 0; r < 8; ++r) {
+                        const uint32_t py = by0 + r;
+                        if (py < geometry->chroma_th) {
+                            left[r] = plane[py * geometry->chroma_tw + (bx0 - 1)];
+                        }
+                    }
+                }
+                if (has_above && has_left) {
+                    above_left = plane[(by0 - 1) * geometry->chroma_tw + (bx0 - 1)];
+                }
+
+                int16_t prediction[64];
+                predict_8x8(select_chroma_predictor_mode(has_above, has_left),
+                            has_above ? above : nullptr,
+                            has_left ? left : nullptr,
+                            above_left,
+                            prediction,
+                            max_val);
+
                 for (int r = 0; r < 8; ++r) {
                     for (int c = 0; c < 8; ++c) {
-                        const uint32_t px = bx * 8 + c;
-                        const uint32_t py = by * 8 + r;
+                        const uint32_t px = bx0 + c;
+                        const uint32_t py = by0 + r;
                         if (px < geometry->chroma_tw && py < geometry->chroma_th) {
-                            const int value = static_cast<int>(std::round(recon_dct[r * 8 + c])) + max_val / 2;
+                            const int value = static_cast<int>(std::round(recon_dct[r * 8 + c])) + prediction[r * 8 + c];
                             plane[py * geometry->chroma_tw + px] = static_cast<int16_t>(
                                 std::clamp(value, 0, static_cast<int>(max_val)));
                         }

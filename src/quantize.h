@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "dct.h"
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -52,7 +53,11 @@ public:
         else if (bit_depth == 12) bd_mul = 16.0f;
 
         for (int i = 0; i < 64; i++) {
-            const float v = (base[i] * scale / 100.0f) * bd_mul;
+            float base_value = static_cast<float>(base[i]);
+            if (is_chroma_) {
+                base_value *= chroma_step_scale(i);
+            }
+            const float v = (base_value * scale / 100.0f) * bd_mul;
             table_[i] = static_cast<uint16_t>(std::max(v, 1.0f));
             inv_table_[i] = 1.0f / table_[i];
         }
@@ -84,25 +89,55 @@ public:
     [[nodiscard]] const std::array<uint16_t, 64>& steps() const { return table_; }
 
 private:
-    [[nodiscard]] float deadzone_scale(int zigzag_index) const {
-        if (zigzag_index == 0) {
-            return 0.5f;
+    [[nodiscard]] float chroma_step_scale(int zigzag_index) const {
+        if (!is_chroma_) {
+            return 1.0f;
         }
 
-        float scale = is_chroma_ ? 0.54f : 0.52f;
+        if (quality_ >= 90.0f) {
+            if (zigzag_index == 0) return 0.68f;
+            if (zigzag_index < 8) return 0.62f;
+            if (zigzag_index < 24) return 0.58f;
+            return 0.70f;
+        }
         if (quality_ >= 85.0f) {
-            scale += 0.03f;
+            if (zigzag_index == 0) return 0.74f;
+            if (zigzag_index < 8) return 0.68f;
+            if (zigzag_index < 24) return 0.64f;
+            return 0.76f;
+        }
+        if (quality_ >= 75.0f) {
+            if (zigzag_index == 0) return 0.82f;
+            if (zigzag_index < 8) return 0.76f;
+            if (zigzag_index < 24) return 0.72f;
+            return 0.84f;
+        }
+
+        if (zigzag_index == 0) return 0.90f;
+        if (zigzag_index < 8) return 0.86f;
+        if (zigzag_index < 24) return 0.82f;
+        return 0.92f;
+    }
+
+    [[nodiscard]] float deadzone_scale(int zigzag_index) const {
+        if (zigzag_index == 0) {
+            return is_chroma_ ? 0.46f : 0.5f;
+        }
+
+        float scale = is_chroma_ ? 0.49f : 0.52f;
+        if (quality_ >= 85.0f) {
+            scale += is_chroma_ ? 0.0f : 0.03f;
         } else if (quality_ >= 75.0f) {
-            scale += 0.01f;
+            scale += is_chroma_ ? 0.01f : 0.01f;
         }
 
         if (zigzag_index >= 20) {
-            scale += 0.06f;
+            scale += is_chroma_ ? 0.04f : 0.06f;
         } else if (zigzag_index >= 8) {
-            scale += 0.03f;
+            scale += is_chroma_ ? 0.02f : 0.03f;
         }
 
-        return std::clamp(scale, 0.5f, 0.7f);
+        return std::clamp(scale, is_chroma_ ? 0.46f : 0.5f, 0.7f);
     }
 
     std::array<uint16_t, 64> table_{};

@@ -2,31 +2,37 @@
     {
         "image":  "1230927884722.jpg",
         "profile":  "q75_yuv444",
+        "declared_format":  "jpeg",
+        "detected_format":  "jpeg",
         "source_bytes":  12462,
-        "wk_bytes":  22931,
-        "size_ratio":  1.8401,
-        "mae":  3.9786,
-        "psnr":  33.2244,
-        "ssim":  0.964495
+        "wk_bytes":  23504,
+        "size_ratio":  1.8861,
+        "mae":  3.9421,
+        "psnr":  33.3066,
+        "ssim":  0.965309
     },
     {
         "image":  "20981203812.jpg",
         "profile":  "q75_yuv444",
+        "declared_format":  "jpeg",
+        "detected_format":  "webp",
         "source_bytes":  26160,
-        "wk_bytes":  55845,
-        "size_ratio":  2.1347,
-        "mae":  1.7362,
-        "psnr":  38.5048,
-        "ssim":  0.969242
+        "wk_bytes":  55999,
+        "size_ratio":  2.1406,
+        "mae":  1.7118,
+        "psnr":  38.6026,
+        "ssim":  0.970773
     },
     {
         "image":  "2334937028374.jpg",
         "profile":  "q75_yuv444",
+        "declared_format":  "jpeg",
+        "detected_format":  "jpeg",
         "source_bytes":  6072,
-        "wk_bytes":  15027,
-        "size_ratio":  2.4748,
-        "mae":  2.4685,
-        "psnr":  36.7448,
-        "ssim":  0.972182
+        "wk_bytes":  15377,
+        "size_ratio":  2.5324,
+        "mae":  2.44,
+        "psnr":  36.8437,
+        "ssim":  0.973078
     }
 ]

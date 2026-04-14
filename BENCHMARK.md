@@ -1,4 +1,4 @@
-﻿# WK Benchmark Notes
+# WK Benchmark Notes
 
 ## Current Scope
 
@@ -7,7 +7,7 @@ The current benchmarking surface is still focused on still images on Windows, wi
 
 - `wkenc` for producing `.wk`
 - `wkmetric` for comparing a source image against a decoded `.wk` or another image
-- `utils/benchmark_corpus.ps1` for running the bundled JPEG corpus in `photos/`
+- `utils/benchmark_corpus.ps1` for running the bundled photo corpus in `photos/`
 - `wkview` for visual confirmation after the numeric pass
 
 This is still not a finalized public benchmark report against JPEG, WebP, or AVIF.
@@ -38,7 +38,7 @@ You can also emit JSON for automation:
 
 ## Corpus Workflow
 
-Run the bundled JPEG corpus in `photos/` with the current default lossy profile:
+Run the bundled photo corpus in `photos/` with the current default lossy profile:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444
@@ -58,6 +58,7 @@ powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Lossless
 
 The script writes encoded outputs and a JSON summary under `benchmark/`.
 Benchmark filenames include the full profile suffix, for example `benchmark/2334937028374_q85_yuv444.wk`.
+The JSON rows now include `declared_format` and `detected_format`, and the runner warns when a file extension does not match the file signature.
 
 ## Current Snapshot In This Tree
 
@@ -66,12 +67,14 @@ The current checked-in summaries are:
 - `benchmark/summary_q75_yuv444.json`
 - `benchmark/summary_q85_yuv444.json`
 
-Across the bundled three-image JPEG corpus, the current averages are:
+Across the bundled three-image photo corpus, the current averages are:
+
+In the current tree, `20981203812.jpg` has a JPEG extension but a WebP signature, so the checked-in corpus should be read as a mixed photo corpus, not a pure JPEG corpus.
 
 | Profile | Total WK bytes | Avg PSNR | Avg SSIM |
 | --- | ---: | ---: | ---: |
-| `q75_yuv444` | `93,803` | `36.1580` | `0.968640` |
-| `q85_yuv444` | `133,503` | `39.1305` | `0.982176` |
+| `q75_yuv444` | `94,880` | `36.2510` | `0.969720` |
+| `q85_yuv444` | `141,026` | `39.2407` | `0.983246` |
 
 A practical reading of those numbers:
 
@@ -82,8 +85,8 @@ A practical reading of those numbers:
 Example from the current tree:
 
 - `photos/2334937028374.jpg`: `6,072` bytes
-- `benchmark/2334937028374_q75_yuv444.wk`: `15,027` bytes, `PSNR 36.7448`, `SSIM 0.972182`
-- `benchmark/2334937028374_q85_yuv444.wk`: `20,180` bytes, `PSNR 39.6637`, `SSIM 0.984977`
+- `benchmark/2334937028374_q75_yuv444.wk`: `15,377` bytes, `PSNR 36.8437`, `SSIM 0.973078`
+- `benchmark/2334937028374_q85_yuv444.wk`: `21,983` bytes, `PSNR 39.7032`, `SSIM 0.985858`
 
 ## Smoke Workflow
 

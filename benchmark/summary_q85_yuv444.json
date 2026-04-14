@@ -2,31 +2,37 @@
     {
         "image":  "1230927884722.jpg",
         "profile":  "q85_yuv444",
+        "declared_format":  "jpeg",
+        "detected_format":  "jpeg",
         "source_bytes":  12462,
-        "wk_bytes":  30376,
-        "size_ratio":  2.4375,
-        "mae":  2.6165,
-        "psnr":  36.9075,
-        "ssim":  0.981649
+        "wk_bytes":  32859,
+        "size_ratio":  2.6367,
+        "mae":  2.5653,
+        "psnr":  37.0787,
+        "ssim":  0.982747
     },
     {
         "image":  "20981203812.jpg",
         "profile":  "q85_yuv444",
+        "declared_format":  "jpeg",
+        "detected_format":  "webp",
         "source_bytes":  26160,
-        "wk_bytes":  82947,
-        "size_ratio":  3.1708,
-        "mae":  1.3945,
-        "psnr":  40.8203,
-        "ssim":  0.979901
+        "wk_bytes":  86184,
+        "size_ratio":  3.2945,
+        "mae":  1.3771,
+        "psnr":  40.9401,
+        "ssim":  0.981132
     },
     {
         "image":  "2334937028374.jpg",
         "profile":  "q85_yuv444",
+        "declared_format":  "jpeg",
+        "detected_format":  "jpeg",
         "source_bytes":  6072,
-        "wk_bytes":  20180,
-        "size_ratio":  3.3235,
-        "mae":  1.8186,
-        "psnr":  39.6637,
-        "ssim":  0.984977
+        "wk_bytes":  21983,
+        "size_ratio":  3.6204,
+        "mae":  1.8246,
+        "psnr":  39.7032,
+        "ssim":  0.985858
     }
 ]

@@ -7,6 +7,38 @@ param(
     [string]$OutputDir = "benchmark"
 )
 
+function Get-DeclaredFormat([string]$Path) {
+    $ext = [System.IO.Path]::GetExtension($Path).TrimStart('.').ToLowerInvariant()
+    if ($ext -eq 'jpg') {
+        return 'jpeg'
+    }
+    return $ext
+}
+
+function Get-ImageSignatureFormat([string]$Path) {
+    $buffer = New-Object byte[] 16
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+    } finally {
+        $stream.Dispose()
+    }
+
+    if ($read -ge 12 -and $buffer[0] -eq 0x52 -and $buffer[1] -eq 0x49 -and $buffer[2] -eq 0x46 -and $buffer[3] -eq 0x46 -and $buffer[8] -eq 0x57 -and $buffer[9] -eq 0x45 -and $buffer[10] -eq 0x42 -and $buffer[11] -eq 0x50) {
+        return 'webp'
+    }
+    if ($read -ge 8 -and $buffer[0] -eq 0x89 -and $buffer[1] -eq 0x50 -and $buffer[2] -eq 0x4E -and $buffer[3] -eq 0x47 -and $buffer[4] -eq 0x0D -and $buffer[5] -eq 0x0A -and $buffer[6] -eq 0x1A -and $buffer[7] -eq 0x0A) {
+        return 'png'
+    }
+    if ($read -ge 3 -and $buffer[0] -eq 0xFF -and $buffer[1] -eq 0xD8 -and $buffer[2] -eq 0xFF) {
+        return 'jpeg'
+    }
+    if ($read -ge 2 -and $buffer[0] -eq 0x50 -and $buffer[1] -eq 0x36) {
+        return 'ppm'
+    }
+    return 'unknown'
+}
+
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $wkenc = Join-Path $RepoRoot "build\wkenc.exe"
 $wkmetric = Join-Path $RepoRoot "build\wkmetric.exe"
@@ -28,6 +60,12 @@ $profile = if ($Lossless) { "lossless" } else { "q$([int][Math]::Round($Quality)
 $rows = @()
 
 foreach ($photo in $photos) {
+    $declaredFormat = Get-DeclaredFormat $photo.Name
+    $detectedFormat = Get-ImageSignatureFormat $photo.FullName
+    if ($detectedFormat -ne 'unknown' -and $detectedFormat -ne $declaredFormat) {
+        Write-Warning "Extension/content mismatch for $($photo.Name): extension says $declaredFormat, signature says $detectedFormat"
+    }
+
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($photo.Name)
     $output = Join-Path (Join-Path $RepoRoot $OutputDir) ("{0}_{1}.wk" -f $stem, $profile)
     $args = @()
@@ -59,6 +97,8 @@ foreach ($photo in $photos) {
     $rows += [pscustomobject]@{
         image = $photo.Name
         profile = $profile
+        declared_format = $declaredFormat
+        detected_format = $detectedFormat
         source_bytes = [int64]$metric.reference_bytes
         wk_bytes = [int64]$metric.candidate_bytes
         size_ratio = [Math]::Round([double]$metric.size_ratio, 4)

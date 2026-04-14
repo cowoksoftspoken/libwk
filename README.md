@@ -1,4 +1,4 @@
-﻿# WK
+# WK
 
 WK is an experimental still-image codec and container centered around a native `.wk` bitstream, structured `WKMETA` metadata, a small CLI toolchain, measurable image-quality analysis, and a desktop compare viewer for visual inspection.
 
@@ -214,6 +214,8 @@ powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Lossless
 
 The generated `.wk` outputs and JSON summaries are written under `benchmark/`.
 
+The benchmark JSON now includes both `declared_format` and `detected_format`, and the runner warns if a file extension does not match the file signature.
+
 ### Smoke script
 
 A simple end-to-end smoke path also exists at:
@@ -229,12 +231,14 @@ The current measured corpus summaries in this tree are:
 - `benchmark/summary_q75_yuv444.json`
 - `benchmark/summary_q85_yuv444.json`
 
-Across the bundled three-image JPEG corpus, the current averages are:
+Across the bundled three-image photo corpus, the current averages are:
+
+The benchmark runner now records both `declared_format` and `detected_format`. In the current tree, `20981203812.jpg` has a JPEG extension but a WebP signature, so treat these numbers as a mixed photo corpus rather than a pure JPEG corpus.
 
 | Profile | Total WK bytes | Avg PSNR | Avg SSIM |
 | --- | ---: | ---: | ---: |
-| `q75_yuv444` | `93,803` | `36.1580` | `0.968640` |
-| `q85_yuv444` | `133,503` | `39.1305` | `0.982176` |
+| `q75_yuv444` | `94,880` | `36.2510` | `0.969720` |
+| `q85_yuv444` | `141,026` | `39.2407` | `0.983246` |
 
 That means the current direction is behaving as expected:
 
@@ -245,8 +249,8 @@ That means the current direction is behaving as expected:
 A concrete example from the current tree:
 
 - `photos/2334937028374.jpg`: `6,072` bytes
-- `benchmark/2334937028374_q75_yuv444.wk`: `15,027` bytes, `PSNR 36.7448`, `SSIM 0.972182`
-- `benchmark/2334937028374_q85_yuv444.wk`: `20,180` bytes, `PSNR 39.6637`, `SSIM 0.984977`
+- `benchmark/2334937028374_q75_yuv444.wk`: `15,377` bytes, `PSNR 36.8437`, `SSIM 0.973078`
+- `benchmark/2334937028374_q85_yuv444.wk`: `21,983` bytes, `PSNR 39.7032`, `SSIM 0.985858`
 
 ## CLI Tools
 
