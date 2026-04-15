@@ -61,6 +61,134 @@ static PredMode select_chroma_predictor_mode(bool has_above, bool has_left) {
     }
     return PredMode::DC_128;
 }
+
+struct TileChromaComplexity {
+    float mean_chroma_deviation = 0.0f;
+    float mean_chroma_gradient = 0.0f;
+    float mean_luma_gradient = 0.0f;
+    float max_chroma_deviation = 0.0f;
+};
+
+static TileChromaComplexity analyze_tile_chroma_complexity(
+    const int16_t* y_plane, const int16_t* cb_plane, const int16_t* cr_plane,
+    uint32_t image_width, uint32_t image_height,
+    uint32_t x0, uint32_t y0, uint32_t tw, uint32_t th,
+    ChromaSubsampling subsampling, int16_t max_val) {
+
+    TileChromaComplexity stats;
+    const float inv_max = 1.0f / std::max(1, static_cast<int>(max_val));
+    const int16_t chroma_mid = static_cast<int16_t>((static_cast<int>(max_val) + 1) / 2);
+
+    const uint32_t chroma_w = subsampling == ChromaSubsampling::YUV420 ? (image_width + 1) / 2 : image_width;
+    const uint32_t chroma_h = subsampling == ChromaSubsampling::YUV420 ? (image_height + 1) / 2 : image_height;
+    const uint32_t chroma_x0 = subsampling == ChromaSubsampling::YUV420 ? x0 / 2 : x0;
+    const uint32_t chroma_y0 = subsampling == ChromaSubsampling::YUV420 ? y0 / 2 : y0;
+    const uint32_t chroma_tw = subsampling == ChromaSubsampling::YUV420 ? (tw + 1) / 2 : tw;
+    const uint32_t chroma_th = subsampling == ChromaSubsampling::YUV420 ? (th + 1) / 2 : th;
+
+    double chroma_dev_sum = 0.0;
+    double chroma_grad_sum = 0.0;
+    size_t chroma_dev_count = 0;
+    size_t chroma_grad_count = 0;
+
+    for (uint32_t row = 0; row < chroma_th; ++row) {
+        for (uint32_t col = 0; col < chroma_tw; ++col) {
+            const uint32_t sx = chroma_x0 + col;
+            const uint32_t sy = chroma_y0 + row;
+            if (sx >= chroma_w || sy >= chroma_h) {
+                continue;
+            }
+
+            const size_t idx = static_cast<size_t>(sy) * chroma_w + sx;
+            const int cb = cb_plane[idx];
+            const int cr = cr_plane[idx];
+            const float deviation = 0.5f * (std::abs(cb - chroma_mid) + std::abs(cr - chroma_mid)) * inv_max;
+            chroma_dev_sum += deviation;
+            stats.max_chroma_deviation = std::max(stats.max_chroma_deviation, deviation);
+            ++chroma_dev_count;
+
+            if (col + 1 < chroma_tw && sx + 1 < chroma_w) {
+                const size_t right_idx = idx + 1;
+                chroma_grad_sum += 0.5 * (
+                    std::abs(cb - static_cast<int>(cb_plane[right_idx])) +
+                    std::abs(cr - static_cast<int>(cr_plane[right_idx]))) * inv_max;
+                ++chroma_grad_count;
+            }
+            if (row + 1 < chroma_th && sy + 1 < chroma_h) {
+                const size_t down_idx = idx + chroma_w;
+                chroma_grad_sum += 0.5 * (
+                    std::abs(cb - static_cast<int>(cb_plane[down_idx])) +
+                    std::abs(cr - static_cast<int>(cr_plane[down_idx]))) * inv_max;
+                ++chroma_grad_count;
+            }
+        }
+    }
+
+    double luma_grad_sum = 0.0;
+    size_t luma_grad_count = 0;
+    for (uint32_t row = 0; row < th; ++row) {
+        for (uint32_t col = 0; col < tw; ++col) {
+            const size_t idx = static_cast<size_t>(y0 + row) * image_width + (x0 + col);
+            const int y = y_plane[idx];
+
+            if (col + 1 < tw) {
+                luma_grad_sum += std::abs(y - static_cast<int>(y_plane[idx + 1])) * inv_max;
+                ++luma_grad_count;
+            }
+            if (row + 1 < th) {
+                luma_grad_sum += std::abs(y - static_cast<int>(y_plane[idx + image_width])) * inv_max;
+                ++luma_grad_count;
+            }
+        }
+    }
+
+    if (chroma_dev_count > 0) {
+        stats.mean_chroma_deviation = static_cast<float>(chroma_dev_sum / chroma_dev_count);
+    }
+    if (chroma_grad_count > 0) {
+        stats.mean_chroma_gradient = static_cast<float>(chroma_grad_sum / chroma_grad_count);
+    }
+    if (luma_grad_count > 0) {
+        stats.mean_luma_gradient = static_cast<float>(luma_grad_sum / luma_grad_count);
+    }
+
+    return stats;
+}
+
+static float adaptive_chroma_quality_for_tile(float base_quality,
+                                              const TileChromaComplexity& stats,
+                                              ChromaSubsampling subsampling) {
+    const float detail_score = std::clamp(
+        stats.mean_chroma_deviation * 0.95f +
+        stats.max_chroma_deviation * 0.30f +
+        stats.mean_chroma_gradient * 1.35f +
+        stats.mean_luma_gradient * 0.75f,
+        0.0f, 1.0f);
+
+    float delta = 0.0f;
+    if (detail_score < 0.06f) {
+        delta = -8.0f;
+    } else if (detail_score < 0.10f) {
+        delta = -6.0f;
+    } else if (detail_score < 0.16f) {
+        delta = -4.0f;
+    } else if (detail_score < 0.24f) {
+        delta = -2.0f;
+    } else if (detail_score > 0.72f) {
+        delta = 2.0f;
+    } else if (detail_score > 0.54f) {
+        delta = 1.0f;
+    }
+
+    if (base_quality < 85.0f && delta < 0.0f) {
+        delta *= 0.8f;
+    }
+    if (subsampling == ChromaSubsampling::YUV420 && delta < 0.0f) {
+        delta *= 0.6f;
+    }
+
+    return std::clamp(base_quality + delta, 1.0f, 100.0f);
+}
 static std::vector<uint8_t> expand_rgb8_to_rgba8(const Image& image) {
     std::vector<uint8_t> expanded(static_cast<size_t>(image.width()) * image.height() * 4, 255);
     const auto pixels = image.pixels();
@@ -100,25 +228,6 @@ static Result<TileEncodeResult> encode_lossy_tile(
     uint32_t blocks_x = (tw + 7) / 8;
     uint32_t blocks_y = (th + 7) / 8;
 
-    QuantTable quant_y, quant_c, quant_a;
-    float chroma_quality = quality;
-    if (subsampling == ChromaSubsampling::YUV444) {
-        float chroma_boost = 8.0f;
-        if (quality >= 90.0f) {
-            chroma_boost = 2.0f;
-        } else if (quality >= 85.0f) {
-            chroma_boost = 4.0f;
-        } else if (quality >= 75.0f) {
-            chroma_boost = 6.0f;
-        }
-        chroma_quality = std::min(100.0f, quality + chroma_boost);
-    }
-    quant_y.build(quality, false, bit_depth);
-    quant_c.build(chroma_quality, true, bit_depth);
-    if (has_alpha) {
-        quant_a.build(std::min(100.0f, quality + 10.0f), false, bit_depth);
-    }
-
     struct BlockData {
         PredMode mode;
         DctBlockI16 quantized;
@@ -148,6 +257,33 @@ static Result<TileEncodeResult> encode_lossy_tile(
         for (uint32_t c = 0; c < tw; ++c) {
             tile_y_data[r * tw + c] = y_plane[(y0 + r) * image_width + (x0 + c)];
         }
+    }
+
+    QuantTable quant_y, quant_c, quant_a;
+    float chroma_quality = quality;
+    if (subsampling == ChromaSubsampling::YUV444) {
+        float chroma_boost = 8.0f;
+        if (quality >= 90.0f) {
+            chroma_boost = 2.0f;
+        } else if (quality >= 85.0f) {
+            chroma_boost = 4.0f;
+        } else if (quality >= 75.0f) {
+            chroma_boost = 6.0f;
+        }
+        chroma_quality = std::min(100.0f, quality + chroma_boost);
+    }
+
+    const TileChromaComplexity chroma_stats = analyze_tile_chroma_complexity(
+        y_plane, cb_plane, cr_plane,
+        image_width, image_height,
+        x0, y0, tw, th,
+        subsampling, max_val);
+    chroma_quality = adaptive_chroma_quality_for_tile(chroma_quality, chroma_stats, subsampling);
+
+    quant_y.build(quality, false, bit_depth);
+    quant_c.build(chroma_quality, true, bit_depth);
+    if (has_alpha) {
+        quant_a.build(std::min(100.0f, quality + 10.0f), false, bit_depth);
     }
 
     std::vector<int16_t> reconstructed_y(tw * th, 0);

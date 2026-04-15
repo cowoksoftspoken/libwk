@@ -4,7 +4,9 @@ param(
     [ValidateSet("444", "420")]
     [string]$Subsampling = "444",
     [switch]$Lossless,
-    [string]$OutputDir = "benchmark"
+    [string]$OutputDir = "benchmark",
+    [ValidateSet("any", "jpeg", "webp", "png", "ppm", "unknown")]
+    [string]$FormatFilter = "any"
 )
 
 function Get-DeclaredFormat([string]$Path) {
@@ -56,14 +58,18 @@ if ($photos.Count -eq 0) {
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot $OutputDir) | Out-Null
-$profile = if ($Lossless) { "lossless" } else { "q$([int][Math]::Round($Quality))_yuv$Subsampling" }
+$formatSuffix = if ($FormatFilter -eq "any") { "" } else { "_src$FormatFilter" }
+$profile = if ($Lossless) { "lossless$formatSuffix" } else { "q$([int][Math]::Round($Quality))_yuv$Subsampling$formatSuffix" }
 $rows = @()
 
 foreach ($photo in $photos) {
     $declaredFormat = Get-DeclaredFormat $photo.Name
-    $detectedFormat = Get-ImageSignatureFormat $photo.FullName
-    if ($detectedFormat -ne 'unknown' -and $detectedFormat -ne $declaredFormat) {
-        Write-Warning "Extension/content mismatch for $($photo.Name): extension says $declaredFormat, signature says $detectedFormat"
+    $signatureFormat = Get-ImageSignatureFormat $photo.FullName
+    if ($signatureFormat -ne 'unknown' -and $signatureFormat -ne $declaredFormat) {
+        Write-Warning "Extension/content mismatch for $($photo.Name): extension says $declaredFormat, signature says $signatureFormat"
+    }
+    if ($FormatFilter -ne "any" -and $signatureFormat -ne $FormatFilter) {
+        continue
     }
 
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($photo.Name)
@@ -98,7 +104,7 @@ foreach ($photo in $photos) {
         image = $photo.Name
         profile = $profile
         declared_format = $declaredFormat
-        detected_format = $detectedFormat
+        detected_format = $signatureFormat
         source_bytes = [int64]$metric.reference_bytes
         wk_bytes = [int64]$metric.candidate_bytes
         size_ratio = [Math]::Round([double]$metric.size_ratio, 4)
@@ -106,6 +112,10 @@ foreach ($photo in $photos) {
         psnr = [Math]::Round([double]$metric.psnr, 4)
         ssim = [Math]::Round([double]$metric.ssim, 6)
     }
+}
+
+if ($rows.Count -eq 0) {
+    throw "No input files matched FormatFilter=$FormatFilter"
 }
 
 $summaryPath = Join-Path (Join-Path $RepoRoot $OutputDir) ("summary_{0}.json" -f $profile)

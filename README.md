@@ -237,8 +237,8 @@ The benchmark runner now records both `declared_format` and `detected_format`. I
 
 | Profile | Total WK bytes | Avg PSNR | Avg SSIM |
 | --- | ---: | ---: | ---: |
-| `q75_yuv444` | `94,880` | `36.2510` | `0.969720` |
-| `q85_yuv444` | `141,026` | `39.2407` | `0.983246` |
+| `q75_yuv444` | `91,849` | `36.1589` | `0.968494` |
+| `q85_yuv444` | `128,567` | `39.0992` | `0.982096` |
 
 That means the current direction is behaving as expected:
 
@@ -249,8 +249,8 @@ That means the current direction is behaving as expected:
 A concrete example from the current tree:
 
 - `photos/2334937028374.jpg`: `6,072` bytes
-- `benchmark/2334937028374_q75_yuv444.wk`: `15,377` bytes, `PSNR 36.8437`, `SSIM 0.973078`
-- `benchmark/2334937028374_q85_yuv444.wk`: `21,983` bytes, `PSNR 39.7032`, `SSIM 0.985858`
+- `benchmark/2334937028374_q75_yuv444.wk`: `14,771` bytes, `PSNR 36.7899`, `SSIM 0.972625`
+- `benchmark/2334937028374_q85_yuv444.wk`: `18,870` bytes, `PSNR 39.5723`, `SSIM 0.984899`
 
 ## CLI Tools
 

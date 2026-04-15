@@ -1,7 +1,7 @@
 [
     {
         "image":  "1230927884722.jpg",
-        "profile":  "q75_yuv444",
+        "profile":  "q75_yuv444_srcjpeg",
         "declared_format":  "jpeg",
         "detected_format":  "jpeg",
         "source_bytes":  12462,
@@ -12,20 +12,8 @@
         "ssim":  0.964874
     },
     {
-        "image":  "20981203812.jpg",
-        "profile":  "q75_yuv444",
-        "declared_format":  "jpeg",
-        "detected_format":  "webp",
-        "source_bytes":  26160,
-        "wk_bytes":  54294,
-        "size_ratio":  2.0755,
-        "mae":  1.74,
-        "psnr":  38.4328,
-        "ssim":  0.967984
-    },
-    {
         "image":  "2334937028374.jpg",
-        "profile":  "q75_yuv444",
+        "profile":  "q75_yuv444_srcjpeg",
         "declared_format":  "jpeg",
         "detected_format":  "jpeg",
         "source_bytes":  6072,
