@@ -198,7 +198,7 @@ Benchmark utilities now live under `utils/`.
 ### Run the corpus benchmark
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444
+.\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444
 ```
 
 Explicit `4:2:0` pass:
