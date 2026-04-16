@@ -116,6 +116,7 @@ TEST(RoundtripTest, HigherLossyQualityTradesSizeForQuality) {
     EXPECT_GT(encoded85->size(), encoded75->size());
     EXPECT_GT(metrics85->psnr, metrics75->psnr + 0.5) << "Higher quality should increase PSNR";
     EXPECT_GT(metrics85->ssim, metrics75->ssim) << "Higher quality should increase SSIM";
+    EXPECT_GT(metrics85->artifacts.chroma_psnr, metrics75->artifacts.chroma_psnr) << "Higher quality should increase chroma PSNR";
 }
 
 TEST(RoundtripTest, LossyTransparentAlphaRoundTrip) {
@@ -282,5 +283,7 @@ TEST(RoundtripTest, ZeroDimensionError) {
     auto result = encode(image);
     EXPECT_FALSE(result.has_value());
 }
+
+
 
 

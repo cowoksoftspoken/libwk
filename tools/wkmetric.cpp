@@ -78,6 +78,19 @@ std::string channel_label(uint8_t index) {
     }
 }
 
+std::string plane_label(uint8_t index) {
+    switch (index) {
+    case 0:
+        return "Y";
+    case 1:
+        return "Cb";
+    case 2:
+        return "Cr";
+    default:
+        return "?";
+    }
+}
+
 std::string json_escape(std::string_view input) {
     std::string output;
     output.reserve(input.size() + 8);
@@ -148,6 +161,25 @@ void print_text_report(std::string_view reference_path,
             << " SSIM=" << channel.ssim
             << '\n';
     }
+
+    std::cout << "YCbCr:\n";
+    for (size_t plane_index = 0; plane_index < metrics.ycbcr.size(); ++plane_index) {
+        const auto& plane = metrics.ycbcr[plane_index];
+        std::cout
+            << plane_label(static_cast<uint8_t>(plane_index)) << ":"
+            << " MAE=" << plane.mae
+            << " MSE=" << plane.mse
+            << " PSNR=" << plane.psnr
+            << " SSIM=" << plane.ssim
+            << '\n';
+    }
+
+    std::cout
+        << "Chroma MAE:     " << metrics.artifacts.chroma_mae << '\n'
+        << "Chroma PSNR:    " << metrics.artifacts.chroma_psnr << " dB\n"
+        << "Weighted Luma:  " << metrics.artifacts.weighted_luma_mae << '\n'
+        << "Weighted Chroma:" << ' ' << metrics.artifacts.weighted_chroma_mae << '\n'
+        << "Max Abs Error:  " << metrics.artifacts.max_abs_error << '\n';
 }
 
 void print_json_report(std::string_view reference_path,
@@ -191,7 +223,33 @@ void print_json_report(std::string_view reference_path,
         std::cout << '\n';
     }
 
-    std::cout << "  }\n}\n";
+    std::cout << "  },\n";
+    std::cout << "  \"ycbcr\": {\n";
+    for (size_t plane_index = 0; plane_index < metrics.ycbcr.size(); ++plane_index) {
+        const auto& plane = metrics.ycbcr[plane_index];
+        std::cout
+            << "    \"" << plane_label(static_cast<uint8_t>(plane_index)) << "\": {"
+            << "\"mae\": " << plane.mae << ", "
+            << "\"mse\": " << plane.mse << ", "
+            << "\"psnr\": " << plane.psnr << ", "
+            << "\"ssim\": " << plane.ssim << "}";
+        if (plane_index + 1u != metrics.ycbcr.size()) {
+            std::cout << ',';
+        }
+        std::cout << '\n';
+    }
+
+    std::cout
+        << "  },\n"
+        << "  \"artifacts\": {\n"
+        << "    \"chroma_mae\": " << metrics.artifacts.chroma_mae << ",\n"
+        << "    \"chroma_mse\": " << metrics.artifacts.chroma_mse << ",\n"
+        << "    \"chroma_psnr\": " << metrics.artifacts.chroma_psnr << ",\n"
+        << "    \"weighted_luma_mae\": " << metrics.artifacts.weighted_luma_mae << ",\n"
+        << "    \"weighted_chroma_mae\": " << metrics.artifacts.weighted_chroma_mae << ",\n"
+        << "    \"max_abs_error\": " << metrics.artifacts.max_abs_error << "\n"
+        << "  }\n"
+        << "}\n";
 }
 
 }
@@ -255,7 +313,8 @@ int main(int argc, char* argv[]) {
         print_json_report(reference_path, candidate_path, *metrics, reference_size, candidate_size,
                           static_cast<uint8_t>(reference->bit_depth()));
     } else {
-        print_text_report(reference_path, candidate_path, *metrics, reference_size, candidate_size, static_cast<uint8_t>(reference->bit_depth()));
+        print_text_report(reference_path, candidate_path, *metrics, reference_size, candidate_size,
+                          static_cast<uint8_t>(reference->bit_depth()));
     }
 
     return 0;

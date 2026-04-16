@@ -28,7 +28,7 @@ Typical output includes:
 - `MSE`
 - `PSNR`
 - `SSIM`
-- per-channel breakdown for `R`, `G`, `B`, and `A` when alpha is compared
+- RGB per-channel breakdown, Y/Cb/Cr breakdown, and weighted chroma artifact metrics
 
 You can also emit JSON for automation:
 
@@ -41,24 +41,24 @@ You can also emit JSON for automation:
 Run the bundled photo corpus in `photos/` with the current default lossy profile:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444
+.\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444
 ```
 
 Run an explicit `4:2:0` comparison pass:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 420
+.\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 420
 ```
 
 Run a lossless corpus pass:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Lossless
+.\utils\benchmark_corpus.ps1 -Lossless
 ```
 
 The script writes encoded outputs and a JSON summary under `benchmark/`.
 Benchmark filenames include the full profile suffix, for example `benchmark/2334937028374_q85_yuv444.wk`.
-The JSON rows now include `declared_format` and `detected_format`, and the runner warns when a file extension does not match the file signature.
+The JSON rows now include `declared_format`, `detected_format`, `y_psnr`, `chroma_psnr`, `weighted_chroma_mae`, and `max_abs_error`, and the runner warns when a file extension does not match the file signature.
 
 ## Current Snapshot In This Tree
 
@@ -73,8 +73,8 @@ In the current tree, `20981203812.jpg` has a JPEG extension but a WebP signature
 
 | Profile | Total WK bytes | Avg PSNR | Avg SSIM |
 | --- | ---: | ---: | ---: |
-| `q75_yuv444` | `91,849` | `36.1589` | `0.968494` |
-| `q85_yuv444` | `128,567` | `39.0992` | `0.982096` |
+| `q75_yuv444` | `92,659` | `36.2101` | `0.969126` |
+| `q85_yuv444` | `129,732` | `39.1216` | `0.982421` |
 
 A practical reading of those numbers:
 
@@ -85,8 +85,8 @@ A practical reading of those numbers:
 Example from the current tree:
 
 - `photos/2334937028374.jpg`: `6,072` bytes
-- `benchmark/2334937028374_q75_yuv444.wk`: `14,771` bytes, `PSNR 36.7899`, `SSIM 0.972625`
-- `benchmark/2334937028374_q85_yuv444.wk`: `18,870` bytes, `PSNR 39.5723`, `SSIM 0.984899`
+- `benchmark/2334937028374_q75_yuv444.wk`: `14,865` bytes, `PSNR 36.8016`, `SSIM 0.972798`
+- `benchmark/2334937028374_q85_yuv444.wk`: `19,160` bytes, `PSNR 39.5566`, `SSIM 0.985293`
 
 ## Smoke Workflow
 
@@ -112,7 +112,7 @@ That script now resolves the repo root before running, so it can be launched fro
 
 - core codec tests cover `rANS`, `DCT/IDCT`, container parsing, prediction, metadata round-trip, geometry metadata, and metric correctness
 - integration tests cover the real sample JPEGs from `photos/` for both lossless and lossy encode/decode
-- lossy photo regression now has objective thresholds for both `PSNR` and `SSIM`
+- lossy photo regression now has objective thresholds for both `PSNR` and `SSIM`, with additional chroma-sensitive inspection available through `wkmetric`
 - container parsing rejects malformed streams such as missing `FEND`, invalid tile payload sizes, and unknown required chunks
 - lossy encode preserves alpha in the `WK` tile payload instead of dropping or forcing opacity
 - PNG output is intentionally limited to 8-bit decode output until a higher-bit-depth writer is added
@@ -123,7 +123,7 @@ Use the metrics this way:
 
 - `PSNR` is a fast sanity metric and should not be the only judge
 - `SSIM` is the better default guard for visible structure changes
-- `MAE` is useful for spotting broad color drift
+- `MAE` is useful for spotting broad color drift`r`n- `chroma_psnr` and `weighted_chroma_mae` are the faster checks for small but annoying color artifacts
 - `wkview` remains the final human check for ringing, chroma artifacts, and local damage
 
 ## Viewer Reminder

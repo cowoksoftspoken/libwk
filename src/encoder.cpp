@@ -67,6 +67,8 @@ struct TileChromaComplexity {
     float mean_chroma_gradient = 0.0f;
     float mean_luma_gradient = 0.0f;
     float max_chroma_deviation = 0.0f;
+    float saturated_fraction = 0.0f;
+    float strong_color_edge_fraction = 0.0f;
 };
 
 static TileChromaComplexity analyze_tile_chroma_complexity(
@@ -78,18 +80,22 @@ static TileChromaComplexity analyze_tile_chroma_complexity(
     TileChromaComplexity stats;
     const float inv_max = 1.0f / std::max(1, static_cast<int>(max_val));
     const int16_t chroma_mid = static_cast<int16_t>((static_cast<int>(max_val) + 1) / 2);
+    const bool is_subsampled = subsampling == ChromaSubsampling::YUV420;
+    const uint32_t chroma_step = is_subsampled ? 2u : 1u;
 
-    const uint32_t chroma_w = subsampling == ChromaSubsampling::YUV420 ? (image_width + 1) / 2 : image_width;
-    const uint32_t chroma_h = subsampling == ChromaSubsampling::YUV420 ? (image_height + 1) / 2 : image_height;
-    const uint32_t chroma_x0 = subsampling == ChromaSubsampling::YUV420 ? x0 / 2 : x0;
-    const uint32_t chroma_y0 = subsampling == ChromaSubsampling::YUV420 ? y0 / 2 : y0;
-    const uint32_t chroma_tw = subsampling == ChromaSubsampling::YUV420 ? (tw + 1) / 2 : tw;
-    const uint32_t chroma_th = subsampling == ChromaSubsampling::YUV420 ? (th + 1) / 2 : th;
+    const uint32_t chroma_w = is_subsampled ? (image_width + 1) / 2 : image_width;
+    const uint32_t chroma_h = is_subsampled ? (image_height + 1) / 2 : image_height;
+    const uint32_t chroma_x0 = is_subsampled ? x0 / 2 : x0;
+    const uint32_t chroma_y0 = is_subsampled ? y0 / 2 : y0;
+    const uint32_t chroma_tw = is_subsampled ? (tw + 1) / 2 : tw;
+    const uint32_t chroma_th = is_subsampled ? (th + 1) / 2 : th;
 
     double chroma_dev_sum = 0.0;
     double chroma_grad_sum = 0.0;
     size_t chroma_dev_count = 0;
     size_t chroma_grad_count = 0;
+    size_t saturated_count = 0;
+    size_t strong_color_edge_count = 0;
 
     for (uint32_t row = 0; row < chroma_th; ++row) {
         for (uint32_t col = 0; col < chroma_tw; ++col) {
@@ -105,21 +111,46 @@ static TileChromaComplexity analyze_tile_chroma_complexity(
             const float deviation = 0.5f * (std::abs(cb - chroma_mid) + std::abs(cr - chroma_mid)) * inv_max;
             chroma_dev_sum += deviation;
             stats.max_chroma_deviation = std::max(stats.max_chroma_deviation, deviation);
+            if (deviation > 0.18f) {
+                ++saturated_count;
+            }
             ++chroma_dev_count;
 
+            float local_chroma_edge = 0.0f;
             if (col + 1 < chroma_tw && sx + 1 < chroma_w) {
                 const size_t right_idx = idx + 1;
-                chroma_grad_sum += 0.5 * (
+                const float chroma_diff = static_cast<float>(0.5 * (
                     std::abs(cb - static_cast<int>(cb_plane[right_idx])) +
-                    std::abs(cr - static_cast<int>(cr_plane[right_idx]))) * inv_max;
+                    std::abs(cr - static_cast<int>(cr_plane[right_idx])))) * inv_max;
+                chroma_grad_sum += chroma_diff;
+                local_chroma_edge = std::max(local_chroma_edge, chroma_diff);
                 ++chroma_grad_count;
             }
             if (row + 1 < chroma_th && sy + 1 < chroma_h) {
                 const size_t down_idx = idx + chroma_w;
-                chroma_grad_sum += 0.5 * (
+                const float chroma_diff = static_cast<float>(0.5 * (
                     std::abs(cb - static_cast<int>(cb_plane[down_idx])) +
-                    std::abs(cr - static_cast<int>(cr_plane[down_idx]))) * inv_max;
+                    std::abs(cr - static_cast<int>(cr_plane[down_idx])))) * inv_max;
+                chroma_grad_sum += chroma_diff;
+                local_chroma_edge = std::max(local_chroma_edge, chroma_diff);
                 ++chroma_grad_count;
+            }
+
+            const uint32_t luma_x = std::min(x0 + col * chroma_step, image_width - 1);
+            const uint32_t luma_y = std::min(y0 + row * chroma_step, image_height - 1);
+            const size_t luma_idx = static_cast<size_t>(luma_y) * image_width + luma_x;
+            float local_luma_edge = 0.0f;
+            if (luma_x + chroma_step < image_width && luma_x + chroma_step < x0 + tw) {
+                local_luma_edge = std::max(local_luma_edge,
+                    std::abs(y_plane[luma_idx] - static_cast<int>(y_plane[luma_idx + chroma_step])) * inv_max);
+            }
+            if (luma_y + chroma_step < image_height && luma_y + chroma_step < y0 + th) {
+                local_luma_edge = std::max(local_luma_edge,
+                    std::abs(y_plane[luma_idx] - static_cast<int>(y_plane[luma_idx + static_cast<size_t>(chroma_step) * image_width])) * inv_max);
+            }
+
+            if (deviation > 0.14f && local_luma_edge > 0.08f && local_chroma_edge > 0.04f) {
+                ++strong_color_edge_count;
             }
         }
     }
@@ -144,6 +175,8 @@ static TileChromaComplexity analyze_tile_chroma_complexity(
 
     if (chroma_dev_count > 0) {
         stats.mean_chroma_deviation = static_cast<float>(chroma_dev_sum / chroma_dev_count);
+        stats.saturated_fraction = static_cast<float>(saturated_count) / chroma_dev_count;
+        stats.strong_color_edge_fraction = static_cast<float>(strong_color_edge_count) / chroma_dev_count;
     }
     if (chroma_grad_count > 0) {
         stats.mean_chroma_gradient = static_cast<float>(chroma_grad_sum / chroma_grad_count);
@@ -159,32 +192,64 @@ static float adaptive_chroma_quality_for_tile(float base_quality,
                                               const TileChromaComplexity& stats,
                                               ChromaSubsampling subsampling) {
     const float detail_score = std::clamp(
-        stats.mean_chroma_deviation * 0.95f +
-        stats.max_chroma_deviation * 0.30f +
-        stats.mean_chroma_gradient * 1.35f +
-        stats.mean_luma_gradient * 0.75f,
+        stats.mean_chroma_deviation * 0.85f +
+        stats.max_chroma_deviation * 0.20f +
+        stats.mean_chroma_gradient * 1.20f +
+        stats.mean_luma_gradient * 0.55f,
         0.0f, 1.0f);
 
+    const float protection_score = std::clamp(
+        stats.mean_chroma_deviation * 0.65f +
+        stats.max_chroma_deviation * 0.55f +
+        stats.mean_chroma_gradient * 0.95f +
+        stats.mean_luma_gradient * 0.35f +
+        stats.saturated_fraction * 0.85f +
+        stats.strong_color_edge_fraction * 1.05f,
+        0.0f, 1.5f);
+
     float delta = 0.0f;
-    if (detail_score < 0.06f) {
-        delta = -8.0f;
-    } else if (detail_score < 0.10f) {
+    if (detail_score < 0.05f && protection_score < 0.18f) {
         delta = -6.0f;
-    } else if (detail_score < 0.16f) {
-        delta = -4.0f;
-    } else if (detail_score < 0.24f) {
-        delta = -2.0f;
-    } else if (detail_score > 0.72f) {
-        delta = 2.0f;
+    } else if (detail_score < 0.09f && protection_score < 0.22f) {
+        delta = -4.5f;
+    } else if (detail_score < 0.14f && protection_score < 0.28f) {
+        delta = -3.0f;
+    } else if (detail_score < 0.20f && protection_score < 0.34f) {
+        delta = -1.5f;
+    } else if (detail_score > 0.70f) {
+        delta = 1.5f;
     } else if (detail_score > 0.54f) {
-        delta = 1.0f;
+        delta = 0.75f;
+    }
+
+    if (protection_score > 0.72f) {
+        delta = std::max(delta, 4.0f);
+    } else if (protection_score > 0.54f) {
+        delta = std::max(delta, 2.5f);
+    } else if (protection_score > 0.40f) {
+        delta = std::max(delta, 1.5f);
+    } else if (protection_score > 0.30f) {
+        delta = std::max(delta, 0.5f);
+    }
+
+    if (stats.max_chroma_deviation > 0.32f && stats.mean_luma_gradient > 0.09f) {
+        delta = std::max(delta, 2.0f);
+    }
+    if (stats.saturated_fraction > 0.12f && stats.mean_chroma_gradient > 0.06f) {
+        delta = std::max(delta, 1.5f);
+    }
+    if (stats.strong_color_edge_fraction > 0.05f) {
+        delta = std::max(delta, 2.0f);
     }
 
     if (base_quality < 85.0f && delta < 0.0f) {
-        delta *= 0.8f;
+        delta *= 0.75f;
     }
     if (subsampling == ChromaSubsampling::YUV420 && delta < 0.0f) {
         delta *= 0.6f;
+    }
+    if (subsampling == ChromaSubsampling::YUV420 && delta > 0.0f) {
+        delta *= 1.15f;
     }
 
     return std::clamp(base_quality + delta, 1.0f, 100.0f);
@@ -965,6 +1030,7 @@ const char* wk_version(void) {
 }
 
 }
+
 
 
 

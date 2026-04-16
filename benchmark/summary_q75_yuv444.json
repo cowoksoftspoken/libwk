@@ -1,15 +1,22 @@
-[
+﻿[
     {
         "image":  "1230927884722.jpg",
         "profile":  "q75_yuv444",
         "declared_format":  "jpeg",
         "detected_format":  "jpeg",
         "source_bytes":  12462,
-        "wk_bytes":  22784,
-        "size_ratio":  1.8283,
-        "mae":  3.9669,
-        "psnr":  33.2541,
-        "ssim":  0.964874
+        "wk_bytes":  23185,
+        "size_ratio":  1.8605,
+        "mae":  3.9533,
+        "psnr":  33.2861,
+        "ssim":  0.965075,
+        "y_psnr":  33.831,
+        "cb_psnr":  46.0116,
+        "cr_psnr":  44.8961,
+        "chroma_psnr":  45.4181,
+        "weighted_luma_mae":  3.8873,
+        "weighted_chroma_mae":  1.0335,
+        "max_abs_error":  61
     },
     {
         "image":  "20981203812.jpg",
@@ -17,11 +24,18 @@
         "declared_format":  "jpeg",
         "detected_format":  "webp",
         "source_bytes":  26160,
-        "wk_bytes":  54294,
-        "size_ratio":  2.0755,
-        "mae":  1.74,
-        "psnr":  38.4328,
-        "ssim":  0.967984
+        "wk_bytes":  54609,
+        "size_ratio":  2.0875,
+        "mae":  1.7228,
+        "psnr":  38.5426,
+        "ssim":  0.969506,
+        "y_psnr":  38.0604,
+        "cb_psnr":  49.1806,
+        "cr_psnr":  48.9488,
+        "chroma_psnr":  49.0632,
+        "weighted_luma_mae":  2.163,
+        "weighted_chroma_mae":  0.6885,
+        "max_abs_error":  42
     },
     {
         "image":  "2334937028374.jpg",
@@ -29,10 +43,17 @@
         "declared_format":  "jpeg",
         "detected_format":  "jpeg",
         "source_bytes":  6072,
-        "wk_bytes":  14771,
-        "size_ratio":  2.4326,
-        "mae":  2.455,
-        "psnr":  36.7899,
-        "ssim":  0.972625
+        "wk_bytes":  14865,
+        "size_ratio":  2.4481,
+        "mae":  2.4536,
+        "psnr":  36.8016,
+        "ssim":  0.972798,
+        "y_psnr":  37.4433,
+        "cb_psnr":  49.9691,
+        "cr_psnr":  48.919,
+        "chroma_psnr":  49.4124,
+        "weighted_luma_mae":  2.3097,
+        "weighted_chroma_mae":  0.6671,
+        "max_abs_error":  43
     }
 ]

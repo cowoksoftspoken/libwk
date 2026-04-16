@@ -111,6 +111,13 @@ foreach ($photo in $photos) {
         mae = [Math]::Round([double]$metric.mae, 4)
         psnr = [Math]::Round([double]$metric.psnr, 4)
         ssim = [Math]::Round([double]$metric.ssim, 6)
+        y_psnr = [Math]::Round([double]$metric.ycbcr.Y.psnr, 4)
+        cb_psnr = [Math]::Round([double]$metric.ycbcr.Cb.psnr, 4)
+        cr_psnr = [Math]::Round([double]$metric.ycbcr.Cr.psnr, 4)
+        chroma_psnr = [Math]::Round([double]$metric.artifacts.chroma_psnr, 4)
+        weighted_luma_mae = [Math]::Round([double]$metric.artifacts.weighted_luma_mae, 4)
+        weighted_chroma_mae = [Math]::Round([double]$metric.artifacts.weighted_chroma_mae, 4)
+        max_abs_error = [Math]::Round([double]$metric.artifacts.max_abs_error, 4)
     }
 }
 
@@ -119,6 +126,6 @@ if ($rows.Count -eq 0) {
 }
 
 $summaryPath = Join-Path (Join-Path $RepoRoot $OutputDir) ("summary_{0}.json" -f $profile)
-$rows | ConvertTo-Json | Set-Content -Path $summaryPath
-$rows | Format-Table -AutoSize
+$rows | ConvertTo-Json | Set-Content -Path $summaryPath -Encoding utf8
+$rows | Select-Object image, profile, wk_bytes, psnr, ssim, y_psnr, chroma_psnr, weighted_chroma_mae, max_abs_error | Format-Table -AutoSize
 Write-Host "Saved summary to $summaryPath"

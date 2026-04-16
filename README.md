@@ -1,4 +1,4 @@
-# WK
+﻿# WK
 
 WK is an experimental still-image codec and container centered around a native `.wk` bitstream, structured `WKMETA` metadata, a small CLI toolchain, measurable image-quality analysis, and a desktop compare viewer for visual inspection.
 
@@ -82,7 +82,7 @@ What is intentionally not claimed as finished yet:
 ### Measurement and inspection
 
 - `wkmetric` compares a source image against another image or directly against a `.wk` file
-- current metrics include file size, `MAE`, `MSE`, `PSNR`, `SSIM`, and per-channel breakdown
+- current metrics include file size, `MAE`, `MSE`, `PSNR`, `SSIM`, RGB per-channel breakdown, Y/Cb/Cr breakdown, and weighted chroma artifact metrics
 - `wkview` is used as the visual judge after the numeric pass
 - corpus benchmark outputs are written to `benchmark/`
 
@@ -130,8 +130,9 @@ A few practical notes for `wkview` based on the current repo behavior:
 
 ### Windows example
 
-```powershell
-$env:PATH='C:\msys64\ucrt64\bin;'+$env:PATH
+Use MSYS UCRT64 bash Terminal for compile and test the project
+
+```bash
 cmake -S . -B build -G Ninja
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
@@ -203,18 +204,24 @@ powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 7
 Explicit `4:2:0` pass:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 420
+.\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 420
 ```
 
 Lossless pass:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Lossless
+.\utils\benchmark_corpus.ps1 -Lossless
+```
+
+if your windows blocked execution:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 420
 ```
 
 The generated `.wk` outputs and JSON summaries are written under `benchmark/`.
 
-The benchmark JSON now includes both `declared_format` and `detected_format`, and the runner warns if a file extension does not match the file signature.
+The benchmark JSON now includes `declared_format`, `detected_format`, `y_psnr`, `chroma_psnr`, `weighted_chroma_mae`, and `max_abs_error`, and the runner warns if a file extension does not match the file signature.
 
 ### Smoke script
 
@@ -237,8 +244,8 @@ The benchmark runner now records both `declared_format` and `detected_format`. I
 
 | Profile | Total WK bytes | Avg PSNR | Avg SSIM |
 | --- | ---: | ---: | ---: |
-| `q75_yuv444` | `91,849` | `36.1589` | `0.968494` |
-| `q85_yuv444` | `128,567` | `39.0992` | `0.982096` |
+| `q75_yuv444` | `92,659` | `36.2101` | `0.969126` |
+| `q85_yuv444` | `129,732` | `39.1216` | `0.982421` |
 
 That means the current direction is behaving as expected:
 
@@ -249,8 +256,8 @@ That means the current direction is behaving as expected:
 A concrete example from the current tree:
 
 - `photos/2334937028374.jpg`: `6,072` bytes
-- `benchmark/2334937028374_q75_yuv444.wk`: `14,771` bytes, `PSNR 36.7899`, `SSIM 0.972625`
-- `benchmark/2334937028374_q85_yuv444.wk`: `18,870` bytes, `PSNR 39.5723`, `SSIM 0.984899`
+- `benchmark/2334937028374_q75_yuv444.wk`: `14,865` bytes, `PSNR 36.8016`, `SSIM 0.972798`
+- `benchmark/2334937028374_q85_yuv444.wk`: `19,160` bytes, `PSNR 39.5566`, `SSIM 0.985293`
 
 ## CLI Tools
 
@@ -308,7 +315,7 @@ Behavior:
 
 - accepts normal images or `.wk` files on either side
 - decodes `.wk` internally before comparing
-- prints file size, `MAE`, `MSE`, `PSNR`, `SSIM`, and per-channel metrics
+- prints file size, `MAE`, `MSE`, `PSNR`, `SSIM`, RGB per-channel metrics, Y/Cb/Cr metrics, and weighted chroma artifact metrics
 
 ### `wkmeta-dump`
 

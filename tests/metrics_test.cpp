@@ -19,6 +19,20 @@ Image make_rgb_image(uint32_t width, uint32_t height, uint8_t r, uint8_t g, uint
     return image;
 }
 
+Image make_color_edge_image() {
+    Image image(16, 16, BitDepth::Bits8, false);
+    for (uint32_t y = 0; y < 16; ++y) {
+        uint8_t* row = image.row(y);
+        for (uint32_t x = 0; x < 16; ++x) {
+            const bool left = x < 8;
+            row[x * 3 + 0] = left ? 35 : 215;
+            row[x * 3 + 1] = left ? 90 : 60;
+            row[x * 3 + 2] = left ? 210 : 40;
+        }
+    }
+    return image;
+}
+
 }
 
 TEST(MetricsTest, IdenticalImageIsPerfect) {
@@ -29,6 +43,13 @@ TEST(MetricsTest, IdenticalImageIsPerfect) {
     EXPECT_DOUBLE_EQ(metrics->mse, 0.0);
     EXPECT_DOUBLE_EQ(metrics->psnr, 100.0);
     EXPECT_NEAR(metrics->ssim, 1.0, 1e-9);
+    EXPECT_DOUBLE_EQ(metrics->ycbcr[0].mae, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->ycbcr[1].mae, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->ycbcr[2].mae, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->artifacts.chroma_mae, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->artifacts.weighted_luma_mae, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->artifacts.weighted_chroma_mae, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->artifacts.max_abs_error, 0.0);
 }
 
 TEST(MetricsTest, AlphaIsIgnoredWhenOnlyOneImageHasIt) {
@@ -63,3 +84,36 @@ TEST(MetricsTest, DimensionMismatchRejected) {
     ASSERT_FALSE(metrics.has_value());
     EXPECT_EQ(metrics.error().code, ErrorCode::InvalidParameter);
 }
+
+TEST(MetricsTest, ColorShiftShowsUpInChromaMetrics) {
+    Image reference = make_rgb_image(16, 16, 90, 120, 200);
+    Image candidate = make_rgb_image(16, 16, 90, 120, 224);
+
+    auto metrics = wk::metrics::compare_images(reference, candidate);
+    ASSERT_TRUE(metrics.has_value()) << metrics.error().message;
+    EXPECT_GT(metrics->ycbcr[1].mae, 0.0);
+    EXPECT_GT(metrics->ycbcr[2].mae, 0.0);
+    EXPECT_GT(metrics->artifacts.chroma_mae, 0.0);
+    EXPECT_LT(metrics->artifacts.chroma_psnr, 100.0);
+    EXPECT_GE(metrics->artifacts.max_abs_error, 24.0);
+}
+
+TEST(MetricsTest, WeightedChromaMetricTracksColorEdges) {
+    Image reference = make_color_edge_image();
+    Image candidate = reference;
+
+    for (uint32_t y = 0; y < 16; ++y) {
+        uint8_t* row = candidate.row(y);
+        for (uint32_t x = 7; x <= 8; ++x) {
+            row[x * 3 + 0] = static_cast<uint8_t>(std::min(255, row[x * 3 + 0] + 18));
+            row[x * 3 + 1] = static_cast<uint8_t>(std::max(0, row[x * 3 + 1] - 12));
+            row[x * 3 + 2] = static_cast<uint8_t>(std::max(0, row[x * 3 + 2] - 22));
+        }
+    }
+
+    auto metrics = wk::metrics::compare_images(reference, candidate);
+    ASSERT_TRUE(metrics.has_value()) << metrics.error().message;
+    EXPECT_GT(metrics->artifacts.weighted_chroma_mae, metrics->artifacts.chroma_mae);
+    EXPECT_GT(metrics->artifacts.weighted_luma_mae, 0.0);
+}
+
