@@ -20,14 +20,14 @@ constexpr std::array<uint16_t, 64> BASE_QUANT_LUMA = {{
 }};
 
 constexpr std::array<uint16_t, 64> BASE_QUANT_CHROMA = {{
-    17, 18, 24, 47, 99, 99, 99, 99,
-    18, 21, 26, 66, 99, 99, 99, 99,
-    24, 26, 56, 99, 99, 99, 99, 99,
-    47, 66, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99
+    15, 16, 19, 26, 36, 48, 58, 66,
+    16, 18, 21, 30, 40, 54, 64, 72,
+    19, 21, 26, 36, 48, 60, 70, 78,
+    26, 30, 36, 46, 58, 70, 80, 88,
+    36, 40, 48, 58, 70, 82, 90, 96,
+    48, 54, 60, 70, 82, 92, 98, 102,
+    58, 64, 70, 80, 90, 98, 104, 108,
+    66, 72, 78, 88, 96, 102, 108, 112
 }};
 
 class QuantTable {
@@ -95,49 +95,49 @@ private:
         }
 
         if (quality_ >= 90.0f) {
-            if (zigzag_index == 0) return 0.68f;
-            if (zigzag_index < 8) return 0.62f;
-            if (zigzag_index < 24) return 0.58f;
-            return 0.70f;
+            if (zigzag_index == 0) return 0.58f;
+            if (zigzag_index < 8) return 0.54f;
+            if (zigzag_index < 24) return 0.50f;
+            return 0.62f;
         }
         if (quality_ >= 85.0f) {
-            if (zigzag_index == 0) return 0.74f;
+            if (zigzag_index == 0) return 0.64f;
+            if (zigzag_index < 8) return 0.60f;
+            if (zigzag_index < 24) return 0.56f;
+            return 0.68f;
+        }
+        if (quality_ >= 75.0f) {
+            if (zigzag_index == 0) return 0.72f;
             if (zigzag_index < 8) return 0.68f;
             if (zigzag_index < 24) return 0.64f;
             return 0.76f;
         }
-        if (quality_ >= 75.0f) {
-            if (zigzag_index == 0) return 0.82f;
-            if (zigzag_index < 8) return 0.76f;
-            if (zigzag_index < 24) return 0.72f;
-            return 0.84f;
-        }
 
-        if (zigzag_index == 0) return 0.90f;
-        if (zigzag_index < 8) return 0.86f;
-        if (zigzag_index < 24) return 0.82f;
-        return 0.92f;
+        if (zigzag_index == 0) return 0.82f;
+        if (zigzag_index < 8) return 0.78f;
+        if (zigzag_index < 24) return 0.74f;
+        return 0.86f;
     }
 
     [[nodiscard]] float deadzone_scale(int zigzag_index) const {
         if (zigzag_index == 0) {
-            return is_chroma_ ? 0.46f : 0.5f;
+            return is_chroma_ ? 0.44f : 0.5f;
         }
 
-        float scale = is_chroma_ ? 0.49f : 0.52f;
+        float scale = is_chroma_ ? 0.46f : 0.52f;
         if (quality_ >= 85.0f) {
-            scale += is_chroma_ ? 0.0f : 0.03f;
+            scale += is_chroma_ ? -0.01f : 0.03f;
         } else if (quality_ >= 75.0f) {
-            scale += is_chroma_ ? 0.01f : 0.01f;
+            scale += is_chroma_ ? 0.0f : 0.01f;
         }
 
         if (zigzag_index >= 20) {
-            scale += is_chroma_ ? 0.04f : 0.06f;
+            scale += is_chroma_ ? 0.035f : 0.06f;
         } else if (zigzag_index >= 8) {
             scale += is_chroma_ ? 0.02f : 0.03f;
         }
 
-        return std::clamp(scale, is_chroma_ ? 0.46f : 0.5f, 0.7f);
+        return std::clamp(scale, is_chroma_ ? 0.42f : 0.5f, 0.69f);
     }
 
     std::array<uint16_t, 64> table_{};

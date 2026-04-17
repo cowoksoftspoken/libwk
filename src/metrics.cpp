@@ -219,6 +219,51 @@ ChannelMetrics compute_plane_metrics(const std::vector<double>& reference,
     return metrics;
 }
 
+ImageStatistics compute_image_statistics(const DerivedPlanes& planes, double max_value) {
+    ImageStatistics stats;
+    if (max_value <= 0.0) {
+        return stats;
+    }
+
+    const size_t pixel_count = planes.planes[0].size();
+    if (pixel_count == 0) {
+        return stats;
+    }
+
+    const double chroma_mid = max_value * 0.5;
+    const double max_chroma_radius = max_value * std::sqrt(0.5);
+    double sum_y = 0.0;
+    double sum_y2 = 0.0;
+    double sum_chroma = 0.0;
+    size_t dark_count = 0;
+    size_t bright_count = 0;
+
+    for (size_t pixel_index = 0; pixel_index < pixel_count; ++pixel_index) {
+        const double y_norm = planes.planes[0][pixel_index] / max_value;
+        const double cb = planes.planes[1][pixel_index] - chroma_mid;
+        const double cr = planes.planes[2][pixel_index] - chroma_mid;
+        const double chroma_norm = max_chroma_radius > 0.0
+            ? std::clamp(std::hypot(cb, cr) / max_chroma_radius, 0.0, 1.0)
+            : 0.0;
+
+        sum_y += y_norm;
+        sum_y2 += y_norm * y_norm;
+        sum_chroma += chroma_norm;
+        if (y_norm <= 0.25) {
+            ++dark_count;
+        }
+        if (y_norm >= 0.75) {
+            ++bright_count;
+        }
+    }
+
+    stats.mean_luma = sum_y / static_cast<double>(pixel_count);
+    stats.luma_stddev = std::sqrt(std::max(0.0, sum_y2 / static_cast<double>(pixel_count) - stats.mean_luma * stats.mean_luma));
+    stats.mean_chroma = sum_chroma / static_cast<double>(pixel_count);
+    stats.dark_fraction = static_cast<double>(dark_count) / static_cast<double>(pixel_count);
+    stats.bright_fraction = static_cast<double>(bright_count) / static_cast<double>(pixel_count);
+    return stats;
+}
 ArtifactMetrics compute_artifact_metrics(const Image& reference,
                                          const Image& candidate,
                                          uint8_t compared_channels,
@@ -327,6 +372,8 @@ Result<ImageMetrics> compare_images(const Image& reference, const Image& candida
 
     const DerivedPlanes reference_ycbcr = build_ycbcr_planes(reference, max_value);
     const DerivedPlanes candidate_ycbcr = build_ycbcr_planes(candidate, max_value);
+    result.reference_stats = compute_image_statistics(reference_ycbcr, max_value);
+    result.candidate_stats = compute_image_statistics(candidate_ycbcr, max_value);
     for (size_t plane_index = 0; plane_index < result.ycbcr.size(); ++plane_index) {
         result.ycbcr[plane_index] = compute_plane_metrics(
             reference_ycbcr.planes[plane_index],

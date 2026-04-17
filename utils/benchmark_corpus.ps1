@@ -41,7 +41,81 @@ function Get-ImageSignatureFormat([string]$Path) {
     return 'unknown'
 }
 
+function Get-RelativePath([string]$BasePath, [string]$TargetPath) {
+    $base = [System.IO.Path]::GetFullPath($BasePath)
+    if (!$base.EndsWith([System.IO.Path]::DirectorySeparatorChar) -and !$base.EndsWith([System.IO.Path]::AltDirectorySeparatorChar)) {
+        $base += [System.IO.Path]::DirectorySeparatorChar
+    }
+    $baseUri = [System.Uri]$base
+    $targetUri = [System.Uri]([System.IO.Path]::GetFullPath($TargetPath))
+    return [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString())
+}
+
+function Get-PortablePath([string]$Path) {
+    return ((($Path -replace '\\', '/') -replace '/+', '/')).TrimStart('./')
+}
+
+function Get-SceneGroup([string]$PhotoPath, [string]$PhotosRoot, [string]$InputRoot) {
+    $base = if ([System.IO.Path]::GetFullPath($PhotoPath).StartsWith([System.IO.Path]::GetFullPath($PhotosRoot), [System.StringComparison]::OrdinalIgnoreCase)) {
+        $PhotosRoot
+    } else {
+        $InputRoot
+    }
+    $relative = Get-PortablePath (Get-RelativePath $base $PhotoPath)
+    $parts = $relative -split '/'
+    if ($parts.Length -le 1) {
+        return 'root'
+    }
+    return $parts[0].ToLowerInvariant()
+}
+
+function Get-OutputStem([string]$RelativePath) {
+    $withoutExt = [System.IO.Path]::ChangeExtension($RelativePath, $null)
+    if ($withoutExt.EndsWith('.')) {
+        $withoutExt = $withoutExt.Substring(0, $withoutExt.Length - 1)
+    }
+    return ((($withoutExt -replace '[\\/]+', '_') -replace '[^A-Za-z0-9._-]', '_')).Trim('._')
+}
+
+function Get-LightingBucket([double]$MeanLuma, [double]$DarkFraction, [double]$BrightFraction) {
+    if ($DarkFraction -ge 0.40 -or $MeanLuma -le 0.33) {
+        return 'dark'
+    }
+    if ($BrightFraction -ge 0.35 -or $MeanLuma -ge 0.62) {
+        return 'bright'
+    }
+    return 'balanced'
+}
+
+function New-Rollup([string]$Name, $Rows) {
+    if ($Rows.Count -eq 0) {
+        return [pscustomobject]@{
+            key = $Name
+            count = 0
+            total_wk_bytes = 0
+            avg_psnr = 0.0
+            avg_ssim = 0.0
+            avg_chroma_psnr = 0.0
+            avg_weighted_chroma_mae = 0.0
+            avg_source_mean_luma = 0.0
+        }
+    }
+
+    return [pscustomobject]@{
+        key = $Name
+        count = $Rows.Count
+        total_wk_bytes = [int64](($Rows | Measure-Object -Property wk_bytes -Sum).Sum)
+        avg_psnr = [Math]::Round([double](($Rows | Measure-Object -Property psnr -Average).Average), 4)
+        avg_ssim = [Math]::Round([double](($Rows | Measure-Object -Property ssim -Average).Average), 6)
+        avg_chroma_psnr = [Math]::Round([double](($Rows | Measure-Object -Property chroma_psnr -Average).Average), 4)
+        avg_weighted_chroma_mae = [Math]::Round([double](($Rows | Measure-Object -Property weighted_chroma_mae -Average).Average), 4)
+        avg_source_mean_luma = [Math]::Round([double](($Rows | Measure-Object -Property source_mean_luma -Average).Average), 4)
+    }
+}
+
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+$PhotosRoot = Join-Path $RepoRoot "photos"
+$InputRoot = Join-Path $RepoRoot $InputDir
 $wkenc = Join-Path $RepoRoot "build\wkenc.exe"
 $wkmetric = Join-Path $RepoRoot "build\wkmetric.exe"
 
@@ -51,10 +125,15 @@ if (!(Test-Path $wkenc)) {
 if (!(Test-Path $wkmetric)) {
     throw "wkmetric.exe not found at $wkmetric"
 }
+if (!(Test-Path $InputRoot)) {
+    throw "InputDir not found: $InputRoot"
+}
 
-$photos = Get-ChildItem -Path (Join-Path $RepoRoot $InputDir) -Filter *.jpg | Sort-Object Name
+$photos = Get-ChildItem -Path $InputRoot -Recurse -File |
+    Where-Object { $_.Extension.ToLowerInvariant() -in '.jpg', '.jpeg' } |
+    Sort-Object FullName
 if ($photos.Count -eq 0) {
-    throw "No .jpg files found in $InputDir"
+    throw "No .jpg/.jpeg files found in $InputDir"
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot $OutputDir) | Out-Null
@@ -63,17 +142,19 @@ $profile = if ($Lossless) { "lossless$formatSuffix" } else { "q$([int][Math]::Ro
 $rows = @()
 
 foreach ($photo in $photos) {
+    $relativePath = Get-PortablePath (Get-RelativePath $RepoRoot $photo.FullName)
     $declaredFormat = Get-DeclaredFormat $photo.Name
     $signatureFormat = Get-ImageSignatureFormat $photo.FullName
     if ($signatureFormat -ne 'unknown' -and $signatureFormat -ne $declaredFormat) {
-        Write-Warning "Extension/content mismatch for $($photo.Name): extension says $declaredFormat, signature says $signatureFormat"
+        Write-Warning "Extension/content mismatch for ${relativePath}: extension says $declaredFormat, signature says $signatureFormat"
     }
     if ($FormatFilter -ne "any" -and $signatureFormat -ne $FormatFilter) {
         continue
     }
 
-    $stem = [System.IO.Path]::GetFileNameWithoutExtension($photo.Name)
-    $output = Join-Path (Join-Path $RepoRoot $OutputDir) ("{0}_{1}.wk" -f $stem, $profile)
+    $sceneGroup = Get-SceneGroup $photo.FullName $PhotosRoot $InputRoot
+    $outputStem = Get-OutputStem (Get-PortablePath (Get-RelativePath $InputRoot $photo.FullName))
+    $output = Join-Path (Join-Path $RepoRoot $OutputDir) ("{0}_{1}.wk" -f $outputStem, $profile)
     $args = @()
     if ($Lossless) {
         $args += "--lossless"
@@ -91,20 +172,25 @@ foreach ($photo in $photos) {
 
     & $wkenc @args
     if ($LASTEXITCODE -ne 0) {
-        throw "wkenc failed for $($photo.Name)"
+        throw "wkenc failed for $relativePath"
     }
 
     $json = & $wkmetric --json $photo.FullName $output
     if ($LASTEXITCODE -ne 0) {
-        throw "wkmetric failed for $($photo.Name)"
+        throw "wkmetric failed for $relativePath"
     }
 
     $metric = $json | ConvertFrom-Json
+    $lightingBucket = Get-LightingBucket ([double]$metric.reference_stats.mean_luma) ([double]$metric.reference_stats.dark_fraction) ([double]$metric.reference_stats.bright_fraction)
     $rows += [pscustomobject]@{
         image = $photo.Name
+        relative_path = $relativePath
+        scene_group = $sceneGroup
+        lighting_bucket = $lightingBucket
         profile = $profile
         declared_format = $declaredFormat
         detected_format = $signatureFormat
+        output_file = (Get-PortablePath (Get-RelativePath $RepoRoot $output))
         source_bytes = [int64]$metric.reference_bytes
         wk_bytes = [int64]$metric.candidate_bytes
         size_ratio = [Math]::Round([double]$metric.size_ratio, 4)
@@ -118,6 +204,11 @@ foreach ($photo in $photos) {
         weighted_luma_mae = [Math]::Round([double]$metric.artifacts.weighted_luma_mae, 4)
         weighted_chroma_mae = [Math]::Round([double]$metric.artifacts.weighted_chroma_mae, 4)
         max_abs_error = [Math]::Round([double]$metric.artifacts.max_abs_error, 4)
+        source_mean_luma = [Math]::Round([double]$metric.reference_stats.mean_luma, 4)
+        source_luma_stddev = [Math]::Round([double]$metric.reference_stats.luma_stddev, 4)
+        source_mean_chroma = [Math]::Round([double]$metric.reference_stats.mean_chroma, 4)
+        source_dark_fraction = [Math]::Round([double]$metric.reference_stats.dark_fraction, 4)
+        source_bright_fraction = [Math]::Round([double]$metric.reference_stats.bright_fraction, 4)
     }
 }
 
@@ -126,6 +217,37 @@ if ($rows.Count -eq 0) {
 }
 
 $summaryPath = Join-Path (Join-Path $RepoRoot $OutputDir) ("summary_{0}.json" -f $profile)
-$rows | ConvertTo-Json | Set-Content -Path $summaryPath -Encoding utf8
-$rows | Select-Object image, profile, wk_bytes, psnr, ssim, y_psnr, chroma_psnr, weighted_chroma_mae, max_abs_error | Format-Table -AutoSize
+$rows | ConvertTo-Json -Depth 4 | Set-Content -Path $summaryPath -Encoding utf8
+
+$sceneRollups = @($rows | Group-Object scene_group | Sort-Object Name | ForEach-Object { New-Rollup $_.Name $_.Group })
+$lightingRollups = @($rows | Group-Object lighting_bucket | Sort-Object Name | ForEach-Object { New-Rollup $_.Name $_.Group })
+$sceneLightingRollups = @(
+    $rows |
+        Group-Object { "$($_.scene_group)|$($_.lighting_bucket)" } |
+        Sort-Object Name |
+        ForEach-Object {
+            $parts = $_.Name -split '\|', 2
+            [pscustomobject]@{
+                scene_group = $parts[0]
+                lighting_bucket = $parts[1]
+                summary = New-Rollup $_.Name $_.Group
+            }
+        }
+)
+$rollup = [pscustomobject]@{
+    profile = $profile
+    input_dir = $InputDir
+    total_images = $rows.Count
+    overall = New-Rollup 'overall' $rows
+    by_scene_group = $sceneRollups
+    by_lighting_bucket = $lightingRollups
+    by_scene_and_lighting = $sceneLightingRollups
+}
+$rollupPath = Join-Path (Join-Path $RepoRoot $OutputDir) ("rollup_{0}.json" -f $profile)
+$rollup | ConvertTo-Json -Depth 6 | Set-Content -Path $rollupPath -Encoding utf8
+
+$rows |
+    Select-Object relative_path, scene_group, lighting_bucket, wk_bytes, psnr, ssim, chroma_psnr, @{ Name = 'w_chroma'; Expression = { $_.weighted_chroma_mae } } |
+    Format-Table -AutoSize
 Write-Host "Saved summary to $summaryPath"
+Write-Host "Saved rollup to $rollupPath"

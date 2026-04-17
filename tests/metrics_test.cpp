@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <wk/wk.hpp>
 #include "../src/metrics.h"
 
@@ -50,6 +51,8 @@ TEST(MetricsTest, IdenticalImageIsPerfect) {
     EXPECT_DOUBLE_EQ(metrics->artifacts.weighted_luma_mae, 0.0);
     EXPECT_DOUBLE_EQ(metrics->artifacts.weighted_chroma_mae, 0.0);
     EXPECT_DOUBLE_EQ(metrics->artifacts.max_abs_error, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->reference_stats.mean_luma, metrics->candidate_stats.mean_luma);
+    EXPECT_DOUBLE_EQ(metrics->reference_stats.mean_chroma, metrics->candidate_stats.mean_chroma);
 }
 
 TEST(MetricsTest, AlphaIsIgnoredWhenOnlyOneImageHasIt) {
@@ -117,3 +120,15 @@ TEST(MetricsTest, WeightedChromaMetricTracksColorEdges) {
     EXPECT_GT(metrics->artifacts.weighted_luma_mae, 0.0);
 }
 
+TEST(MetricsTest, ImageStatisticsTrackBrightnessBuckets) {
+    Image dark = make_rgb_image(16, 16, 18, 18, 18);
+    Image bright = make_rgb_image(16, 16, 240, 240, 240);
+
+    auto metrics = wk::metrics::compare_images(dark, bright);
+    ASSERT_TRUE(metrics.has_value()) << metrics.error().message;
+    EXPECT_LT(metrics->reference_stats.mean_luma, metrics->candidate_stats.mean_luma);
+    EXPECT_GT(metrics->reference_stats.dark_fraction, 0.99);
+    EXPECT_GT(metrics->candidate_stats.bright_fraction, 0.99);
+    EXPECT_LT(metrics->reference_stats.mean_chroma, 1e-6);
+    EXPECT_LT(metrics->candidate_stats.mean_chroma, 1e-6);
+}

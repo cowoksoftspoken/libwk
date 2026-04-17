@@ -22,6 +22,14 @@ struct ArtifactMetrics {
     double max_abs_error = 0.0;
 };
 
+struct ImageStatistics {
+    double mean_luma = 0.0;
+    double luma_stddev = 0.0;
+    double mean_chroma = 0.0;
+    double dark_fraction = 0.0;
+    double bright_fraction = 0.0;
+};
+
 struct ImageMetrics {
     uint32_t width = 0;
     uint32_t height = 0;
@@ -34,6 +42,8 @@ struct ImageMetrics {
     std::array<ChannelMetrics, 4> channels{};
     std::array<ChannelMetrics, 3> ycbcr{};
     ArtifactMetrics artifacts{};
+    ImageStatistics reference_stats{};
+    ImageStatistics candidate_stats{};
 };
 
 Result<ImageMetrics> compare_images(const Image& reference, const Image& candidate, bool include_alpha = true);

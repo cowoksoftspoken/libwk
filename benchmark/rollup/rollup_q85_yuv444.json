@@ -1,0 +1,117 @@
+﻿{
+    "profile": "q85_yuv444",
+    "input_dir": "photos",
+    "total_images": 6,
+    "overall": {
+        "key": "overall",
+        "count": 6,
+        "total_wk_bytes": 1650520,
+        "avg_psnr": 38.4155,
+        "avg_ssim": 0.968006,
+        "avg_chroma_psnr": 47.2829,
+        "avg_weighted_chroma_mae": 0.9149,
+        "avg_source_mean_luma": 0.5095
+    },
+    "by_scene_group": [
+        {
+            "key": "people",
+            "count": 3,
+            "total_wk_bytes": 129732,
+            "avg_psnr": 39.1216,
+            "avg_ssim": 0.982421,
+            "avg_chroma_psnr": 48.9186,
+            "avg_weighted_chroma_mae": 0.7308,
+            "avg_source_mean_luma": 0.4633
+        },
+        {
+            "key": "scenery",
+            "count": 3,
+            "total_wk_bytes": 1520788,
+            "avg_psnr": 37.7094,
+            "avg_ssim": 0.95359,
+            "avg_chroma_psnr": 45.6472,
+            "avg_weighted_chroma_mae": 1.099,
+            "avg_source_mean_luma": 0.5557
+        }
+    ],
+    "by_lighting_bucket": [
+        {
+            "key": "balanced",
+            "count": 4,
+            "total_wk_bytes": 1246442,
+            "avg_psnr": 38.6156,
+            "avg_ssim": 0.979705,
+            "avg_chroma_psnr": 48.1358,
+            "avg_weighted_chroma_mae": 0.8092,
+            "avg_source_mean_luma": 0.4756
+        },
+        {
+            "key": "bright",
+            "count": 2,
+            "total_wk_bytes": 404078,
+            "avg_psnr": 38.0153,
+            "avg_ssim": 0.944607,
+            "avg_chroma_psnr": 45.5771,
+            "avg_weighted_chroma_mae": 1.1263,
+            "avg_source_mean_luma": 0.5772
+        }
+    ],
+    "by_scene_and_lighting": [
+        {
+            "scene_group": "people",
+            "lighting_bucket": "balanced",
+            "summary": {
+                "key": "people|balanced",
+                "count": 2,
+                "total_wk_bytes": 49702,
+                "avg_psnr": 38.2728,
+                "avg_ssim": 0.983796,
+                "avg_chroma_psnr": 48.3786,
+                "avg_weighted_chroma_mae": 0.7784,
+                "avg_source_mean_luma": 0.4583
+            }
+        },
+        {
+            "scene_group": "people",
+            "lighting_bucket": "bright",
+            "summary": {
+                "key": "people|bright",
+                "count": 1,
+                "total_wk_bytes": 80030,
+                "avg_psnr": 40.8193,
+                "avg_ssim": 0.979671,
+                "avg_chroma_psnr": 49.9986,
+                "avg_weighted_chroma_mae": 0.6358,
+                "avg_source_mean_luma": 0.4732
+            }
+        },
+        {
+            "scene_group": "scenery",
+            "lighting_bucket": "balanced",
+            "summary": {
+                "key": "scenery|balanced",
+                "count": 2,
+                "total_wk_bytes": 1196740,
+                "avg_psnr": 38.9584,
+                "avg_ssim": 0.975614,
+                "avg_chroma_psnr": 47.893,
+                "avg_weighted_chroma_mae": 0.8401,
+                "avg_source_mean_luma": 0.493
+            }
+        },
+        {
+            "scene_group": "scenery",
+            "lighting_bucket": "bright",
+            "summary": {
+                "key": "scenery|bright",
+                "count": 1,
+                "total_wk_bytes": 324048,
+                "avg_psnr": 35.2113,
+                "avg_ssim": 0.909543,
+                "avg_chroma_psnr": 41.1556,
+                "avg_weighted_chroma_mae": 1.6168,
+                "avg_source_mean_luma": 0.6811
+            }
+        }
+    ]
+}

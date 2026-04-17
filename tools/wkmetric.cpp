@@ -119,6 +119,32 @@ std::string json_escape(std::string_view input) {
     return output;
 }
 
+void print_image_statistics_text(std::string_view label, const wk::metrics::ImageStatistics& stats) {
+    std::cout
+        << label
+        << " LUMA=" << stats.mean_luma
+        << " STD=" << stats.luma_stddev
+        << " CHROMA=" << stats.mean_chroma
+        << " DARK=" << stats.dark_fraction
+        << " BRIGHT=" << stats.bright_fraction
+        << '\n';
+}
+
+void print_image_statistics_json(std::string_view key, const wk::metrics::ImageStatistics& stats, bool trailing_comma) {
+    std::cout
+        << "  \"" << key << "\": {\n"
+        << "    \"mean_luma\": " << stats.mean_luma << ",\n"
+        << "    \"luma_stddev\": " << stats.luma_stddev << ",\n"
+        << "    \"mean_chroma\": " << stats.mean_chroma << ",\n"
+        << "    \"dark_fraction\": " << stats.dark_fraction << ",\n"
+        << "    \"bright_fraction\": " << stats.bright_fraction << "\n"
+        << "  }";
+    if (trailing_comma) {
+        std::cout << ',';
+    }
+    std::cout << '\n';
+}
+
 void print_usage() {
     std::cerr
         << "Usage: wkmetric [options] <reference.{wk,jpg,jpeg,png,ppm}> <candidate.{wk,jpg,jpeg,png,ppm}>\n\n"
@@ -180,6 +206,9 @@ void print_text_report(std::string_view reference_path,
         << "Weighted Luma:  " << metrics.artifacts.weighted_luma_mae << '\n'
         << "Weighted Chroma:" << ' ' << metrics.artifacts.weighted_chroma_mae << '\n'
         << "Max Abs Error:  " << metrics.artifacts.max_abs_error << '\n';
+
+    print_image_statistics_text("Ref Stats:      ", metrics.reference_stats);
+    print_image_statistics_text("Cand Stats:     ", metrics.candidate_stats);
 }
 
 void print_json_report(std::string_view reference_path,
@@ -248,8 +277,11 @@ void print_json_report(std::string_view reference_path,
         << "    \"weighted_luma_mae\": " << metrics.artifacts.weighted_luma_mae << ",\n"
         << "    \"weighted_chroma_mae\": " << metrics.artifacts.weighted_chroma_mae << ",\n"
         << "    \"max_abs_error\": " << metrics.artifacts.max_abs_error << "\n"
-        << "  }\n"
-        << "}\n";
+        << "  },\n";
+
+    print_image_statistics_json("reference_stats", metrics.reference_stats, true);
+    print_image_statistics_json("candidate_stats", metrics.candidate_stats, false);
+    std::cout << "}\n";
 }
 
 }

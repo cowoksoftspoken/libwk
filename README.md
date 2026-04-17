@@ -1,4 +1,4 @@
-﻿# WK
+# WK
 
 WK is an experimental still-image codec and container centered around a native `.wk` bitstream, structured `WKMETA` metadata, a small CLI toolchain, measurable image-quality analysis, and a desktop compare viewer for visual inspection.
 
@@ -14,10 +14,10 @@ WK is not claimed yet as a finished replacement for JPEG, WebP, or AVIF. The cur
 
 ## Demo
 
-Below is a real `wkview` compare screenshot stored in this repo at `extra/1230927884722_q85_demo.png`.
+Below is a real `wkview` compare screenshot stored in this repo at `extra/ember-7f3a_q85_demo.png`.
 It shows a decoded benchmark output against the original JPEG source.
 
-![WK Viewer compare demo](extra/1230927884722_q85_demo.png)
+![WK Viewer compare demo](extra/ember-7f3a_q85_demo.png)
 
 The viewer is no longer just a raw image window. It now shows:
 
@@ -114,7 +114,7 @@ The repo currently has the best day-to-day experience on Windows.
 
 A few practical notes for `wkview` based on the current repo behavior:
 
-- benchmark outputs live in `benchmark/` and include the full profile suffix, for example `benchmark/2334937028374_q85_yuv444.wk`
+- benchmark outputs live in `benchmark/` and now flatten the recursive source path into the filename, for example `benchmark/people_mira-5b8d_q85_yuv444.wk`
 - if you type the wrong filename, `wkview` now tries to suggest nearby matches instead of only failing with a generic open error
 - if you still somehow hit the old Windows popup about `LoadLibrary failed with error 1114`, make sure you are launching the fresh executable from `build/` and not an older copied binary from another directory
 - the viewer currently aims to be a reliable debug and compare window first, not a full color-managed HDR presentation app
@@ -145,83 +145,87 @@ Dependencies are fetched automatically by CMake:
 
 ## Quick Start
 
-The bundled sample photo is:
+The preferred sample photo path in the current tree is:
 
-- `photos/1230927884722.jpg`
+- `photos/people/ember-7f3a.jpg`
 
 ### Encode lossless
 
 ```powershell
-.\build\wkenc.exe --lossless photos\1230927884722.jpg photos\test_lossless.wk
+.\build\wkenc.exe --lossless photos\people\ember-7f3a.jpg photos\people\ember-7f3a_lossless.wk
 ```
 
 ### Encode lossy
 
 ```powershell
-.\build\wkenc.exe --quality 75 photos\1230927884722.jpg photos\test_lossy.wk
+.\build\wkenc.exe --quality 75 photos\people\ember-7f3a.jpg photos\people\ember-7f3a_lossy.wk
 ```
 
 ### Decode
 
 ```powershell
-.\build\wkdec.exe photos\test_lossy.wk photos\decoded_lossy.png
+.\build\wkdec.exe photos\people\ember-7f3a_lossy.wk photos\people\decoded_lossy.png
 ```
 
 ### Inspect info
 
 ```powershell
-.\build\wkdec.exe --info photos\test_lossy.wk
+.\build\wkdec.exe --info photos\people\ember-7f3a_lossy.wk
 ```
 
 ### Measure a `.wk` against the source image
 
 ```powershell
-.\build\wkmetric.exe photos\1230927884722.jpg photos\test_lossy.wk
+.\build\wkmetric.exe photos\people\ember-7f3a.jpg photos\people\ember-7f3a_lossy.wk
 ```
 
 ### Compare visually in the viewer
 
 ```powershell
-.\build\wkview.exe photos\test_lossy.wk photos\1230927884722.jpg
+.\build\wkview.exe photos\people\ember-7f3a_lossy.wk photos\people\ember-7f3a.jpg
 ```
 
 ### View a benchmark output directly
 
 ```powershell
-.\build\wkview.exe .\benchmark\2334937028374_q85_yuv444.wk .\photos\2334937028374.jpg
+.\build\wkview.exe .\benchmark\people_mira-5b8d_q85_yuv444.wk .\photos\people\mira-5b8d.jpg
 ```
 
 ## Benchmark Workflow
 
 Benchmark utilities now live under `utils/`.
 
-### Run the corpus benchmark
+### Run the recursive corpus benchmark
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444
 ```
 
+That pass now walks the full `photos/` tree recursively, so `photos/people/` and `photos/scenery/` are both included automatically.
+
 Explicit `4:2:0` pass:
-
-```powershell
-.\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 420
-```
-
-Lossless pass:
-
-```powershell
-.\utils\benchmark_corpus.ps1 -Lossless
-```
-
-if your windows blocked execution:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 420
 ```
 
+Lossless pass:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Lossless
+```
+
+JPEG-signature-only pass:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444 -FormatFilter jpeg
+```
+
 The generated `.wk` outputs and JSON summaries are written under `benchmark/`.
 
-The benchmark JSON now includes `declared_format`, `detected_format`, `y_psnr`, `chroma_psnr`, `weighted_chroma_mae`, and `max_abs_error`, and the runner warns if a file extension does not match the file signature.
+The row summaries now include `relative_path`, `scene_group`, `lighting_bucket`, `declared_format`, `detected_format`, `source_mean_luma`, `y_psnr`, `chroma_psnr`, `weighted_chroma_mae`, and `max_abs_error`.
+
+The runner also writes rollup files such as `benchmark/rollup_q75_yuv444.json` and `benchmark/rollup_q85_yuv444.json`, which aggregate the corpus by scene type and lighting bucket.
 
 ### Smoke script
 
@@ -229,7 +233,7 @@ A simple end-to-end smoke path also exists at:
 
 - `utils/test_codec.sh`
 
-That script now resolves the repo root before running, so it is no longer tied to the current shell working directory.
+That script now resolves the repo root, prefers `photos/people/ember-7f3a.jpg`, and falls back to the first recursive JPEG it finds under `photos/`.
 
 ## Current Benchmark Snapshot
 
@@ -237,27 +241,30 @@ The current measured corpus summaries in this tree are:
 
 - `benchmark/summary_q75_yuv444.json`
 - `benchmark/summary_q85_yuv444.json`
+- `benchmark/rollup_q75_yuv444.json`
+- `benchmark/rollup_q85_yuv444.json`
 
-Across the bundled three-image photo corpus, the current averages are:
+Across the current six-image recursive corpus, the mixed-extension averages are:
 
-The benchmark runner now records both `declared_format` and `detected_format`. In the current tree, `20981203812.jpg` has a JPEG extension but a WebP signature, so treat these numbers as a mixed photo corpus rather than a pure JPEG corpus.
+The benchmark runner records both `declared_format` and `detected_format`. In the current tree, `solis-2c9e.jpg` has a WebP signature and `horizon-4e2a.jpg` has a PNG signature, so the main `photos/` benchmark should be treated as a mixed extension corpus rather than a pure JPEG corpus.
 
 | Profile | Total WK bytes | Avg PSNR | Avg SSIM |
 | --- | ---: | ---: | ---: |
-| `q75_yuv444` | `92,659` | `36.2101` | `0.969126` |
-| `q85_yuv444` | `129,732` | `39.1216` | `0.982421` |
+| `q75_yuv444` | `1,168,901` | `35.5446` | `0.948752` |
+| `q85_yuv444` | `1,650,520` | `38.4155` | `0.968006` |
 
-That means the current direction is behaving as expected:
+The scene-aware rollups make the current shape of the corpus much clearer:
 
-- `q75` is the more balanced profile
-- `q85` is the visibly cleaner profile
-- `q85` still costs a lot more bytes, so rate-distortion tuning is still an active area of work
+- `people` stays relatively clean at `q75`: `92,659` bytes total, `PSNR 36.2101`, `SSIM 0.969126`
+- `scenery` is much harder at `q75`: `1,076,242` bytes total, `PSNR 34.8792`, `SSIM 0.928377`
+- the bright scenery sample `photos/scenery/horizon-4e2a.jpg` is currently the harshest case: `q75 SSIM 0.883296`, `q85 SSIM 0.909543`
+- the JPEG-only rollups live at `benchmark/rollup_q75_yuv444_srcjpeg.json` and `benchmark/rollup_q85_yuv444_srcjpeg.json`
 
 A concrete example from the current tree:
 
-- `photos/2334937028374.jpg`: `6,072` bytes
-- `benchmark/2334937028374_q75_yuv444.wk`: `14,865` bytes, `PSNR 36.8016`, `SSIM 0.972798`
-- `benchmark/2334937028374_q85_yuv444.wk`: `19,160` bytes, `PSNR 39.5566`, `SSIM 0.985293`
+- `photos/people/mira-5b8d.jpg`: `6,072` bytes
+- `benchmark/people_mira-5b8d_q75_yuv444.wk`: `14,865` bytes, `PSNR 36.8016`, `SSIM 0.972798`
+- `benchmark/people_mira-5b8d_q85_yuv444.wk`: `19,160` bytes, `PSNR 39.5566`, `SSIM 0.985293`
 
 ## CLI Tools
 
@@ -420,7 +427,7 @@ include/    public headers
 src/        codec, container, metadata, image I/O, metrics
 tools/      CLI tools and viewer
 tests/      unit and integration tests
-photos/     sample/testing assets
+photos/     sample corpus split into people/ and scenery/
 benchmark/  generated benchmark outputs and summaries
 extra/      screenshots and demo assets
 utils/      helper scripts for benchmarking and smoke runs

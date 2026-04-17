@@ -17,7 +17,7 @@
 
 namespace wk {
 
-
+constexpr uint32_t kLossyTileLayoutTag = 0x314d4843u;
 
 struct TileEncodeResult {
     uint16_t tile_x;
@@ -49,35 +49,26 @@ static float compute_quality_score(const int16_t* original, const int16_t* recon
     return score;
 }
 
-static PredMode select_chroma_predictor_mode(bool has_above, bool has_left) {
-    if (has_above && has_left) {
-        return PredMode::DC;
-    }
-    if (has_above) {
-        return PredMode::DC_TOP;
-    }
-    if (has_left) {
-        return PredMode::DC_LEFT;
-    }
-    return PredMode::DC_128;
-}
-
-struct TileChromaComplexity {
+struct TileVisualComplexity {
     float mean_chroma_deviation = 0.0f;
     float mean_chroma_gradient = 0.0f;
     float mean_luma_gradient = 0.0f;
     float max_chroma_deviation = 0.0f;
+    float mean_luma = 0.0f;
+    float bright_fraction = 0.0f;
+    float dark_fraction = 0.0f;
     float saturated_fraction = 0.0f;
     float strong_color_edge_fraction = 0.0f;
+    float highlight_edge_fraction = 0.0f;
 };
 
-static TileChromaComplexity analyze_tile_chroma_complexity(
+static TileVisualComplexity analyze_tile_chroma_complexity(
     const int16_t* y_plane, const int16_t* cb_plane, const int16_t* cr_plane,
     uint32_t image_width, uint32_t image_height,
     uint32_t x0, uint32_t y0, uint32_t tw, uint32_t th,
     ChromaSubsampling subsampling, int16_t max_val) {
 
-    TileChromaComplexity stats;
+    TileVisualComplexity stats;
     const float inv_max = 1.0f / std::max(1, static_cast<int>(max_val));
     const int16_t chroma_mid = static_cast<int16_t>((static_cast<int>(max_val) + 1) / 2);
     const bool is_subsampled = subsampling == ChromaSubsampling::YUV420;
@@ -155,20 +146,43 @@ static TileChromaComplexity analyze_tile_chroma_complexity(
         }
     }
 
+    double luma_sum = 0.0;
     double luma_grad_sum = 0.0;
+    size_t luma_count = 0;
     size_t luma_grad_count = 0;
+    size_t bright_count = 0;
+    size_t dark_count = 0;
+    size_t highlight_edge_count = 0;
+
     for (uint32_t row = 0; row < th; ++row) {
         for (uint32_t col = 0; col < tw; ++col) {
             const size_t idx = static_cast<size_t>(y0 + row) * image_width + (x0 + col);
             const int y = y_plane[idx];
+            const float normalized_luma = static_cast<float>(y) * inv_max;
+            luma_sum += normalized_luma;
+            ++luma_count;
+            if (normalized_luma >= 0.72f) {
+                ++bright_count;
+            }
+            if (normalized_luma <= 0.18f) {
+                ++dark_count;
+            }
 
+            float local_luma_edge = 0.0f;
             if (col + 1 < tw) {
-                luma_grad_sum += std::abs(y - static_cast<int>(y_plane[idx + 1])) * inv_max;
+                const float diff = std::abs(y - static_cast<int>(y_plane[idx + 1])) * inv_max;
+                luma_grad_sum += diff;
+                local_luma_edge = std::max(local_luma_edge, diff);
                 ++luma_grad_count;
             }
             if (row + 1 < th) {
-                luma_grad_sum += std::abs(y - static_cast<int>(y_plane[idx + image_width])) * inv_max;
+                const float diff = std::abs(y - static_cast<int>(y_plane[idx + image_width])) * inv_max;
+                luma_grad_sum += diff;
+                local_luma_edge = std::max(local_luma_edge, diff);
                 ++luma_grad_count;
+            }
+            if (normalized_luma >= 0.62f && local_luma_edge > 0.08f) {
+                ++highlight_edge_count;
             }
         }
     }
@@ -181,6 +195,12 @@ static TileChromaComplexity analyze_tile_chroma_complexity(
     if (chroma_grad_count > 0) {
         stats.mean_chroma_gradient = static_cast<float>(chroma_grad_sum / chroma_grad_count);
     }
+    if (luma_count > 0) {
+        stats.mean_luma = static_cast<float>(luma_sum / luma_count);
+        stats.bright_fraction = static_cast<float>(bright_count) / luma_count;
+        stats.dark_fraction = static_cast<float>(dark_count) / luma_count;
+        stats.highlight_edge_fraction = static_cast<float>(highlight_edge_count) / luma_count;
+    }
     if (luma_grad_count > 0) {
         stats.mean_luma_gradient = static_cast<float>(luma_grad_sum / luma_grad_count);
     }
@@ -189,71 +209,118 @@ static TileChromaComplexity analyze_tile_chroma_complexity(
 }
 
 static float adaptive_chroma_quality_for_tile(float base_quality,
-                                              const TileChromaComplexity& stats,
+                                              const TileVisualComplexity& stats,
                                               ChromaSubsampling subsampling) {
     const float detail_score = std::clamp(
         stats.mean_chroma_deviation * 0.85f +
-        stats.max_chroma_deviation * 0.20f +
+        stats.max_chroma_deviation * 0.22f +
         stats.mean_chroma_gradient * 1.20f +
-        stats.mean_luma_gradient * 0.55f,
-        0.0f, 1.0f);
-
-    const float protection_score = std::clamp(
-        stats.mean_chroma_deviation * 0.65f +
-        stats.max_chroma_deviation * 0.55f +
-        stats.mean_chroma_gradient * 0.95f +
-        stats.mean_luma_gradient * 0.35f +
-        stats.saturated_fraction * 0.85f +
-        stats.strong_color_edge_fraction * 1.05f,
+        stats.mean_luma_gradient * 0.55f +
+        stats.highlight_edge_fraction * 0.40f,
         0.0f, 1.5f);
 
+    const float protection_score = std::clamp(
+        stats.mean_chroma_deviation * 0.70f +
+        stats.max_chroma_deviation * 0.60f +
+        stats.mean_chroma_gradient * 1.00f +
+        stats.mean_luma_gradient * 0.40f +
+        stats.saturated_fraction * 0.90f +
+        stats.strong_color_edge_fraction * 1.10f +
+        stats.bright_fraction * 0.55f +
+        stats.highlight_edge_fraction * 1.20f,
+        0.0f, 2.0f);
+
     float delta = 0.0f;
-    if (detail_score < 0.05f && protection_score < 0.18f) {
-        delta = -6.0f;
-    } else if (detail_score < 0.09f && protection_score < 0.22f) {
-        delta = -4.5f;
-    } else if (detail_score < 0.14f && protection_score < 0.28f) {
-        delta = -3.0f;
-    } else if (detail_score < 0.20f && protection_score < 0.34f) {
-        delta = -1.5f;
-    } else if (detail_score > 0.70f) {
-        delta = 1.5f;
-    } else if (detail_score > 0.54f) {
-        delta = 0.75f;
+    if (detail_score > 0.78f) {
+        delta = std::max(delta, 2.5f);
+    } else if (detail_score > 0.60f) {
+        delta = std::max(delta, 1.5f);
+    } else if (detail_score > 0.42f) {
+        delta = std::max(delta, 0.75f);
     }
 
-    if (protection_score > 0.72f) {
+    if (protection_score > 1.05f) {
+        delta = std::max(delta, 8.0f);
+    } else if (protection_score > 0.82f) {
+        delta = std::max(delta, 6.0f);
+    } else if (protection_score > 0.60f) {
         delta = std::max(delta, 4.0f);
-    } else if (protection_score > 0.54f) {
+    } else if (protection_score > 0.42f) {
         delta = std::max(delta, 2.5f);
-    } else if (protection_score > 0.40f) {
-        delta = std::max(delta, 1.5f);
     } else if (protection_score > 0.30f) {
-        delta = std::max(delta, 0.5f);
+        delta = std::max(delta, 1.0f);
     }
 
     if (stats.max_chroma_deviation > 0.32f && stats.mean_luma_gradient > 0.09f) {
-        delta = std::max(delta, 2.0f);
+        delta = std::max(delta, 4.0f);
     }
     if (stats.saturated_fraction > 0.12f && stats.mean_chroma_gradient > 0.06f) {
-        delta = std::max(delta, 1.5f);
+        delta = std::max(delta, 3.0f);
     }
     if (stats.strong_color_edge_fraction > 0.05f) {
-        delta = std::max(delta, 2.0f);
+        delta = std::max(delta, 3.0f);
+    }
+    if (stats.bright_fraction > 0.30f && stats.mean_chroma_deviation > 0.18f) {
+        delta = std::max(delta, 4.5f);
+    }
+    if (stats.dark_fraction > 0.22f && stats.mean_chroma_deviation > 0.05f &&
+        stats.mean_chroma_gradient > 0.02f && stats.mean_luma_gradient > 0.04f) {
+        delta = std::max(delta, 2.5f);
+    }
+    if (stats.mean_chroma_deviation < 0.16f && stats.mean_chroma_gradient > 0.03f &&
+        stats.mean_luma_gradient > 0.05f) {
+        delta = std::max(delta, 1.75f);
+    }
+    if (stats.highlight_edge_fraction > 0.05f && stats.mean_chroma_gradient > 0.04f) {
+        delta = std::max(delta, 3.5f);
     }
 
-    if (base_quality < 85.0f && delta < 0.0f) {
-        delta *= 0.75f;
-    }
-    if (subsampling == ChromaSubsampling::YUV420 && delta < 0.0f) {
-        delta *= 0.6f;
-    }
     if (subsampling == ChromaSubsampling::YUV420 && delta > 0.0f) {
         delta *= 1.15f;
     }
 
     return std::clamp(base_quality + delta, 1.0f, 100.0f);
 }
+
+static float adaptive_luma_quality_for_tile(float base_quality,
+                                            const TileVisualComplexity& stats,
+                                            ChromaSubsampling subsampling) {
+    const float highlight_score = std::clamp(
+        stats.mean_luma * 0.40f +
+        stats.bright_fraction * 0.95f +
+        stats.mean_luma_gradient * 1.25f +
+        stats.highlight_edge_fraction * 1.10f +
+        stats.strong_color_edge_fraction * 0.75f,
+        0.0f, 1.8f);
+
+    float delta = 0.0f;
+    if (highlight_score > 1.15f) {
+        delta = std::max(delta, 4.0f);
+    } else if (highlight_score > 0.88f) {
+        delta = std::max(delta, 3.0f);
+    } else if (highlight_score > 0.68f) {
+        delta = std::max(delta, 2.0f);
+    } else if (highlight_score > 0.50f) {
+        delta = std::max(delta, 1.0f);
+    }
+
+    if (stats.bright_fraction > 0.34f && stats.mean_luma_gradient > 0.06f) {
+        delta = std::max(delta, 3.5f);
+    }
+    if (stats.highlight_edge_fraction > 0.08f) {
+        delta = std::max(delta, 2.5f);
+    }
+    if (stats.strong_color_edge_fraction > 0.06f && stats.mean_luma_gradient > 0.05f) {
+        delta = std::max(delta, 2.0f);
+    }
+
+    if (subsampling == ChromaSubsampling::YUV420 && delta > 0.0f) {
+        delta *= 1.10f;
+    }
+
+    return std::clamp(base_quality + delta, 1.0f, 100.0f);
+}
+
 static std::vector<uint8_t> expand_rgb8_to_rgba8(const Image& image) {
     std::vector<uint8_t> expanded(static_cast<size_t>(image.width()) * image.height() * 4, 255);
     const auto pixels = image.pixels();
@@ -282,13 +349,46 @@ static Result<TileEncodeResult> encode_lossy_tile(
     }
 
     int16_t max_val = static_cast<int16_t>((1 << bit_depth) - 1);
-    int qp = quality_to_qp(quality);
-    float lambda = qp_to_lambda(qp);
 
     uint32_t x0 = tile_x * tile_size;
     uint32_t y0 = tile_y * tile_size;
     uint32_t tw = std::min(tile_size, image_width - x0);
     uint32_t th = std::min(tile_size, image_height - y0);
+
+    const TileVisualComplexity tile_stats = analyze_tile_chroma_complexity(
+        y_plane, cb_plane, cr_plane,
+        image_width, image_height,
+        x0, y0, tw, th,
+        subsampling, max_val);
+
+    float luma_quality = adaptive_luma_quality_for_tile(quality, tile_stats, subsampling);
+    float chroma_quality = quality;
+    if (subsampling == ChromaSubsampling::YUV444) {
+        float chroma_boost = 8.0f;
+        if (quality >= 90.0f) {
+            chroma_boost = 3.0f;
+        } else if (quality >= 85.0f) {
+            chroma_boost = 5.0f;
+        } else if (quality >= 75.0f) {
+            chroma_boost = 6.0f;
+        }
+        chroma_quality = std::min(100.0f, quality + chroma_boost);
+    } else {
+        chroma_quality = std::min(100.0f, quality + 4.0f);
+    }
+    chroma_quality = adaptive_chroma_quality_for_tile(chroma_quality, tile_stats, subsampling);
+
+    const float max_luma_boost = quality >= 85.0f ? 2.5f : 3.0f;
+    const float max_chroma_boost = subsampling == ChromaSubsampling::YUV444
+        ? (quality >= 85.0f ? 7.0f : 8.5f)
+        : (quality >= 85.0f ? 8.0f : 10.0f);
+    luma_quality = std::min(luma_quality, quality + max_luma_boost);
+    chroma_quality = std::min(chroma_quality, quality + max_chroma_boost);
+
+    int qp = quality_to_qp(luma_quality);
+    float lambda = qp_to_lambda(qp);
+    const int chroma_qp = quality_to_qp(chroma_quality);
+    const float chroma_lambda = qp_to_lambda(chroma_qp);
 
     uint32_t blocks_x = (tw + 7) / 8;
     uint32_t blocks_y = (th + 7) / 8;
@@ -325,27 +425,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
     }
 
     QuantTable quant_y, quant_c, quant_a;
-    float chroma_quality = quality;
-    if (subsampling == ChromaSubsampling::YUV444) {
-        float chroma_boost = 8.0f;
-        if (quality >= 90.0f) {
-            chroma_boost = 2.0f;
-        } else if (quality >= 85.0f) {
-            chroma_boost = 4.0f;
-        } else if (quality >= 75.0f) {
-            chroma_boost = 6.0f;
-        }
-        chroma_quality = std::min(100.0f, quality + chroma_boost);
-    }
-
-    const TileChromaComplexity chroma_stats = analyze_tile_chroma_complexity(
-        y_plane, cb_plane, cr_plane,
-        image_width, image_height,
-        x0, y0, tw, th,
-        subsampling, max_val);
-    chroma_quality = adaptive_chroma_quality_for_tile(chroma_quality, chroma_stats, subsampling);
-
-    quant_y.build(quality, false, bit_depth);
+    quant_y.build(luma_quality, false, bit_depth);
     quant_c.build(chroma_quality, true, bit_depth);
     if (has_alpha) {
         quant_a.build(std::min(100.0f, quality + 10.0f), false, bit_depth);
@@ -439,111 +519,176 @@ static Result<TileEncodeResult> encode_lossy_tile(
         }
     }
 
-    auto encode_chroma_plane = [&](const int16_t* plane, std::vector<BlockData>& blocks,
-                                    uint32_t ctw, uint32_t cth, uint32_t cbx, uint32_t cby) {
-        const int16_t chroma_mid = static_cast<int16_t>((static_cast<int>(max_val) + 1) / 2);
-        std::vector<int16_t> tile_plane(ctw * cth, chroma_mid);
-        std::vector<int16_t> reconstructed_plane(ctw * cth, chroma_mid);
+    const int16_t chroma_mid = static_cast<int16_t>((static_cast<int>(max_val) + 1) / 2);
+    std::vector<int16_t> tile_cb_data(chroma_tw * chroma_th, chroma_mid);
+    std::vector<int16_t> tile_cr_data(chroma_tw * chroma_th, chroma_mid);
+    std::vector<int16_t> reconstructed_cb(chroma_tw * chroma_th, chroma_mid);
+    std::vector<int16_t> reconstructed_cr(chroma_tw * chroma_th, chroma_mid);
 
-        uint32_t src_w = subsampling == ChromaSubsampling::YUV420 ? (image_width + 1) / 2 : image_width;
-        uint32_t src_h = subsampling == ChromaSubsampling::YUV420 ? (image_height + 1) / 2 : image_height;
-        uint32_t cx0 = subsampling == ChromaSubsampling::YUV420 ? x0 / 2 : x0;
-        uint32_t cy0 = subsampling == ChromaSubsampling::YUV420 ? y0 / 2 : y0;
+    const uint32_t chroma_src_w = subsampling == ChromaSubsampling::YUV420 ? (image_width + 1) / 2 : image_width;
+    const uint32_t chroma_src_h = subsampling == ChromaSubsampling::YUV420 ? (image_height + 1) / 2 : image_height;
+    const uint32_t chroma_x0 = subsampling == ChromaSubsampling::YUV420 ? x0 / 2 : x0;
+    const uint32_t chroma_y0 = subsampling == ChromaSubsampling::YUV420 ? y0 / 2 : y0;
 
-        for (uint32_t r = 0; r < cth; ++r) {
-            for (uint32_t c = 0; c < ctw; ++c) {
-                uint32_t sy = cy0 + r;
-                uint32_t sx = cx0 + c;
-                if (sy < src_h && sx < src_w) {
-                    tile_plane[r * ctw + c] = plane[sy * src_w + sx];
-                }
+    for (uint32_t r = 0; r < chroma_th; ++r) {
+        for (uint32_t c = 0; c < chroma_tw; ++c) {
+            const uint32_t sy = chroma_y0 + r;
+            const uint32_t sx = chroma_x0 + c;
+            if (sy < chroma_src_h && sx < chroma_src_w) {
+                tile_cb_data[r * chroma_tw + c] = cb_plane[sy * chroma_src_w + sx];
+                tile_cr_data[r * chroma_tw + c] = cr_plane[sy * chroma_src_w + sx];
+            }
+        }
+    }
+
+    auto select_joint_chroma_mode = [&](const int16_t* cb_original,
+                                        const int16_t* cb_above,
+                                        const int16_t* cb_left,
+                                        int16_t cb_above_left,
+                                        const int16_t* cr_original,
+                                        const int16_t* cr_above,
+                                        const int16_t* cr_left,
+                                        int16_t cr_above_left) {
+        RdResult best{PredMode::DC, 1.0e30f};
+        int16_t cb_prediction[64];
+        int16_t cr_prediction[64];
+        int16_t cb_residual[64];
+        int16_t cr_residual[64];
+
+        for (int mode_index = 0; mode_index < static_cast<int>(PredMode::NUM_MODES); ++mode_index) {
+            const PredMode mode = static_cast<PredMode>(mode_index);
+            predict_8x8(mode, cb_above, cb_left, cb_above_left, cb_prediction, max_val);
+            predict_8x8(mode, cr_above, cr_left, cr_above_left, cr_prediction, max_val);
+
+            for (int i = 0; i < 64; ++i) {
+                cb_residual[i] = cb_original[i] - cb_prediction[i];
+                cr_residual[i] = cr_original[i] - cr_prediction[i];
+            }
+
+            const float distortion = compute_ssd_8x8(cb_original, cb_prediction) +
+                                     compute_ssd_8x8(cr_original, cr_prediction);
+            const float bits = estimate_bits_8x8(cb_residual) + estimate_bits_8x8(cr_residual);
+            const float cost = distortion + chroma_lambda * bits;
+            if (cost < best.cost) {
+                best.mode = mode;
+                best.cost = cost;
             }
         }
 
-        for (uint32_t by = 0; by < cby; ++by) {
-            for (uint32_t bx = 0; bx < cbx; ++bx) {
-                int16_t original_block[64] = {};
-                const uint32_t bx0 = bx * 8;
-                const uint32_t by0 = by * 8;
+        return best.mode;
+    };
 
-                for (int r = 0; r < 8; ++r) {
-                    for (int c = 0; c < 8; ++c) {
-                        const uint32_t px = bx0 + c;
-                        const uint32_t py = by0 + r;
-                        if (px < ctw && py < cth) {
-                            original_block[r * 8 + c] = tile_plane[py * ctw + px];
-                        }
-                    }
-                }
+    auto encode_chroma_component = [&](const int16_t* original_block,
+                                       const int16_t* prediction,
+                                       BlockData& block_data,
+                                       std::vector<int16_t>& reconstructed_plane,
+                                       uint32_t bx0,
+                                       uint32_t by0) {
+        int16_t residual_block[64];
+        for (int i = 0; i < 64; ++i) {
+            residual_block[i] = original_block[i] - prediction[i];
+        }
 
-                int16_t above[8] = {};
-                int16_t left[8] = {};
-                int16_t above_left = chroma_mid;
-                const bool has_above = by > 0;
-                const bool has_left = bx > 0;
+        DctBlock dct_coeffs;
+        for (int i = 0; i < 64; ++i) {
+            dct_coeffs[i] = static_cast<float>(residual_block[i]);
+        }
+        dct_2d_forward(dct_coeffs);
+        quant_c.quantize(dct_coeffs, block_data.quantized);
 
-                if (has_above) {
-                    for (int c = 0; c < 8; ++c) {
-                        const uint32_t px = bx0 + c;
-                        if (px < ctw) {
-                            above[c] = reconstructed_plane[(by0 - 1) * ctw + px];
-                        }
-                    }
-                }
-                if (has_left) {
-                    for (int r = 0; r < 8; ++r) {
-                        const uint32_t py = by0 + r;
-                        if (py < cth) {
-                            left[r] = reconstructed_plane[py * ctw + (bx0 - 1)];
-                        }
-                    }
-                }
-                if (has_above && has_left) {
-                    above_left = reconstructed_plane[(by0 - 1) * ctw + (bx0 - 1)];
-                }
+        DctBlock recon_dct;
+        quant_c.dequantize(block_data.quantized, recon_dct);
+        dct_2d_inverse(recon_dct);
 
-                auto& bd = blocks[by * cbx + bx];
-                bd.mode = select_chroma_predictor_mode(has_above, has_left);
-
-                int16_t prediction[64];
-                predict_8x8(bd.mode, has_above ? above : nullptr,
-                            has_left ? left : nullptr, above_left, prediction, max_val);
-
-                int16_t residual_block[64];
-                for (int i = 0; i < 64; ++i) {
-                    residual_block[i] = original_block[i] - prediction[i];
-                }
-
-                DctBlock dct_coeffs;
-                for (int i = 0; i < 64; ++i) {
-                    dct_coeffs[i] = static_cast<float>(residual_block[i]);
-                }
-                dct_2d_forward(dct_coeffs);
-                quant_c.quantize(dct_coeffs, bd.quantized);
-
-                DctBlock recon_dct;
-                quant_c.dequantize(bd.quantized, recon_dct);
-                dct_2d_inverse(recon_dct);
-
-                for (int r = 0; r < 8; ++r) {
-                    for (int c = 0; c < 8; ++c) {
-                        const uint32_t px = bx0 + c;
-                        const uint32_t py = by0 + r;
-                        if (px < ctw && py < cth) {
-                            const int value = static_cast<int>(std::round(recon_dct[r * 8 + c])) + prediction[r * 8 + c];
-                            reconstructed_plane[py * ctw + px] = static_cast<int16_t>(
-                                std::clamp(value, 0, static_cast<int>(max_val)));
-                        }
-                    }
+        for (int r = 0; r < 8; ++r) {
+            for (int c = 0; c < 8; ++c) {
+                const uint32_t px = bx0 + c;
+                const uint32_t py = by0 + r;
+                if (px < chroma_tw && py < chroma_th) {
+                    const int value = static_cast<int>(std::round(recon_dct[r * 8 + c])) + prediction[r * 8 + c];
+                    reconstructed_plane[py * chroma_tw + px] = static_cast<int16_t>(
+                        std::clamp(value, 0, static_cast<int>(max_val)));
                 }
             }
         }
     };
 
-    encode_chroma_plane(cb_plane, cb_blocks, chroma_tw, chroma_th,
-                        chroma_blocks_x, chroma_blocks_y);
-    encode_chroma_plane(cr_plane, cr_blocks, chroma_tw, chroma_th,
-                        chroma_blocks_x, chroma_blocks_y);
+    for (uint32_t by = 0; by < chroma_blocks_y; ++by) {
+        for (uint32_t bx = 0; bx < chroma_blocks_x; ++bx) {
+            int16_t original_cb_block[64] = {};
+            int16_t original_cr_block[64] = {};
+            const uint32_t bx0 = bx * 8;
+            const uint32_t by0 = by * 8;
+
+            for (int r = 0; r < 8; ++r) {
+                for (int c = 0; c < 8; ++c) {
+                    const uint32_t px = bx0 + c;
+                    const uint32_t py = by0 + r;
+                    if (px < chroma_tw && py < chroma_th) {
+                        original_cb_block[r * 8 + c] = tile_cb_data[py * chroma_tw + px];
+                        original_cr_block[r * 8 + c] = tile_cr_data[py * chroma_tw + px];
+                    }
+                }
+            }
+
+            int16_t cb_above[8] = {};
+            int16_t cb_left[8] = {};
+            int16_t cr_above[8] = {};
+            int16_t cr_left[8] = {};
+            int16_t cb_above_left = chroma_mid;
+            int16_t cr_above_left = chroma_mid;
+            const bool has_above = by > 0;
+            const bool has_left = bx > 0;
+
+            if (has_above) {
+                for (int c = 0; c < 8; ++c) {
+                    const uint32_t px = bx0 + c;
+                    if (px < chroma_tw) {
+                        cb_above[c] = reconstructed_cb[(by0 - 1) * chroma_tw + px];
+                        cr_above[c] = reconstructed_cr[(by0 - 1) * chroma_tw + px];
+                    }
+                }
+            }
+            if (has_left) {
+                for (int r = 0; r < 8; ++r) {
+                    const uint32_t py = by0 + r;
+                    if (py < chroma_th) {
+                        cb_left[r] = reconstructed_cb[py * chroma_tw + (bx0 - 1)];
+                        cr_left[r] = reconstructed_cr[py * chroma_tw + (bx0 - 1)];
+                    }
+                }
+            }
+            if (has_above && has_left) {
+                cb_above_left = reconstructed_cb[(by0 - 1) * chroma_tw + (bx0 - 1)];
+                cr_above_left = reconstructed_cr[(by0 - 1) * chroma_tw + (bx0 - 1)];
+            }
+
+            const PredMode chroma_mode = select_joint_chroma_mode(
+                original_cb_block,
+                has_above ? cb_above : nullptr,
+                has_left ? cb_left : nullptr,
+                cb_above_left,
+                original_cr_block,
+                has_above ? cr_above : nullptr,
+                has_left ? cr_left : nullptr,
+                cr_above_left);
+
+            int16_t cb_prediction[64];
+            int16_t cr_prediction[64];
+            predict_8x8(chroma_mode, has_above ? cb_above : nullptr,
+                        has_left ? cb_left : nullptr, cb_above_left, cb_prediction, max_val);
+            predict_8x8(chroma_mode, has_above ? cr_above : nullptr,
+                        has_left ? cr_left : nullptr, cr_above_left, cr_prediction, max_val);
+
+            auto& cb_block = cb_blocks[by * chroma_blocks_x + bx];
+            auto& cr_block = cr_blocks[by * chroma_blocks_x + bx];
+            cb_block.mode = chroma_mode;
+            cr_block.mode = chroma_mode;
+
+            encode_chroma_component(original_cb_block, cb_prediction, cb_block, reconstructed_cb, bx0, by0);
+            encode_chroma_component(original_cr_block, cr_prediction, cr_block, reconstructed_cr, bx0, by0);
+        }
+    }
 
     std::vector<int16_t> tile_alpha_data;
     std::vector<int16_t> reconstructed_alpha;
@@ -653,7 +798,13 @@ static Result<TileEncodeResult> encode_lossy_tile(
     tile_writer.write_u16(static_cast<uint16_t>(chroma_blocks_x));
     tile_writer.write_u16(static_cast<uint16_t>(chroma_blocks_y));
 
+    tile_writer.write_u32(kLossyTileLayoutTag);
+
     for (const auto& bd : y_blocks) {
+        tile_writer.write_u8(static_cast<uint8_t>(bd.mode));
+    }
+
+    for (const auto& bd : cb_blocks) {
         tile_writer.write_u8(static_cast<uint8_t>(bd.mode));
     }
 

@@ -6,6 +6,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -179,10 +180,23 @@ uint8_t scale_to_u8(uint16_t sample, wk::BitDepth bit_depth) {
 }
 
 uint32_t pack_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-    return (static_cast<uint32_t>(a) << 24)
-         | (static_cast<uint32_t>(r) << 16)
-         | (static_cast<uint32_t>(g) << 8)
-         | static_cast<uint32_t>(b);
+    return MFB_ARGB(a, r, g, b);
+}
+
+uint8_t channel_b(uint32_t pixel) {
+    return static_cast<uint8_t>(pixel & 0xffu);
+}
+
+uint8_t channel_g(uint32_t pixel) {
+    return static_cast<uint8_t>((pixel >> 8) & 0xffu);
+}
+
+uint8_t channel_r(uint32_t pixel) {
+    return static_cast<uint8_t>((pixel >> 16) & 0xffu);
+}
+
+uint8_t channel_a(uint32_t pixel) {
+    return static_cast<uint8_t>((pixel >> 24) & 0xffu);
 }
 
 Glyph glyph_for(char ch) {
@@ -486,6 +500,93 @@ DisplayBuffer compose_compare(const ViewerPanel& decoded_panel,
     return canvas;
 }
 
+struct FitRect {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+FitRect best_fit_rect(uint32_t src_width, uint32_t src_height, uint32_t dst_width, uint32_t dst_height) {
+    if (src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0) {
+        return {};
+    }
+
+    const double scale = std::min(static_cast<double>(dst_width) / static_cast<double>(src_width),
+                                  static_cast<double>(dst_height) / static_cast<double>(src_height));
+    const uint32_t fit_width = std::max(1u, static_cast<uint32_t>(std::lround(src_width * scale)));
+    const uint32_t fit_height = std::max(1u, static_cast<uint32_t>(std::lround(src_height * scale)));
+
+    FitRect rect;
+    rect.width = std::min(fit_width, dst_width);
+    rect.height = std::min(fit_height, dst_height);
+    rect.x = (dst_width - rect.width) / 2u;
+    rect.y = (dst_height - rect.height) / 2u;
+    return rect;
+}
+
+uint32_t sample_bilinear(const DisplayBuffer& source, double src_x, double src_y) {
+    const double clamped_x = std::clamp(src_x, 0.0, static_cast<double>(source.width - 1));
+    const double clamped_y = std::clamp(src_y, 0.0, static_cast<double>(source.height - 1));
+    const uint32_t x0 = static_cast<uint32_t>(clamped_x);
+    const uint32_t y0 = static_cast<uint32_t>(clamped_y);
+    const uint32_t x1 = std::min(x0 + 1, source.width - 1);
+    const uint32_t y1 = std::min(y0 + 1, source.height - 1);
+    const double tx = clamped_x - static_cast<double>(x0);
+    const double ty = clamped_y - static_cast<double>(y0);
+
+    const uint32_t p00 = source.pixels[static_cast<size_t>(y0) * source.width + x0];
+    const uint32_t p10 = source.pixels[static_cast<size_t>(y0) * source.width + x1];
+    const uint32_t p01 = source.pixels[static_cast<size_t>(y1) * source.width + x0];
+    const uint32_t p11 = source.pixels[static_cast<size_t>(y1) * source.width + x1];
+
+    auto interpolate_channel = [&](uint8_t c00, uint8_t c10, uint8_t c01, uint8_t c11) -> uint8_t {
+        const double top = static_cast<double>(c00) + (static_cast<double>(c10) - static_cast<double>(c00)) * tx;
+        const double bottom = static_cast<double>(c01) + (static_cast<double>(c11) - static_cast<double>(c01)) * tx;
+        return static_cast<uint8_t>(std::clamp(std::lround(top + (bottom - top) * ty), 0l, 255l));
+    };
+
+    return pack_rgba(
+        interpolate_channel(channel_r(p00), channel_r(p10), channel_r(p01), channel_r(p11)),
+        interpolate_channel(channel_g(p00), channel_g(p10), channel_g(p01), channel_g(p11)),
+        interpolate_channel(channel_b(p00), channel_b(p10), channel_b(p01), channel_b(p11)),
+        interpolate_channel(channel_a(p00), channel_a(p10), channel_a(p01), channel_a(p11)));
+}
+
+DisplayBuffer scale_to_window(const DisplayBuffer& source, uint32_t window_width, uint32_t window_height) {
+    DisplayBuffer output;
+    output.width = std::max(1u, window_width);
+    output.height = std::max(1u, window_height);
+    output.pixels.assign(static_cast<size_t>(output.width) * output.height, pack_rgba(12, 12, 12, 255));
+
+    const FitRect fit = best_fit_rect(source.width, source.height, output.width, output.height);
+    if (fit.width == 0 || fit.height == 0) {
+        return output;
+    }
+
+    const bool shrinking = fit.width < source.width || fit.height < source.height;
+    for (uint32_t y = 0; y < fit.height; ++y) {
+        for (uint32_t x = 0; x < fit.width; ++x) {
+            const double src_x = (static_cast<double>(x) + 0.5) * static_cast<double>(source.width) / static_cast<double>(fit.width) - 0.5;
+            const double src_y = (static_cast<double>(y) + 0.5) * static_cast<double>(source.height) / static_cast<double>(fit.height) - 0.5;
+
+            uint32_t pixel = 0;
+            if (shrinking) {
+                pixel = sample_bilinear(source, src_x, src_y);
+            } else {
+                const uint32_t nearest_x = std::min(static_cast<uint32_t>(std::lround(std::clamp(src_x, 0.0, static_cast<double>(source.width - 1)))), source.width - 1);
+                const uint32_t nearest_y = std::min(static_cast<uint32_t>(std::lround(std::clamp(src_y, 0.0, static_cast<double>(source.height - 1)))), source.height - 1);
+                pixel = source.pixels[static_cast<size_t>(nearest_y) * source.width + nearest_x];
+            }
+
+            output.pixels[static_cast<size_t>(fit.y + y) * output.width + (fit.x + x)] = pixel;
+        }
+    }
+
+    return output;
+}
+
+
 std::string make_title(std::string_view wk_path, const wk::ImageInfo& info, std::string_view source_path) {
     std::filesystem::path wk_file{std::string(wk_path)};
     std::string title = "WK Viewer - ";
@@ -579,15 +680,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    mfb_set_viewport_best_fit(window, canvas.width, canvas.height);
+    DisplayBuffer present = scale_to_window(canvas, initial_width, initial_height);
+    mfb_set_viewport(window, 0, 0, present.width, present.height);
     unsigned last_window_width = 0;
     unsigned last_window_height = 0;
 
     while (true) {
+        const unsigned window_width = std::max(1u, mfb_get_window_width(window));
+        const unsigned window_height = std::max(1u, mfb_get_window_height(window));
+        if (window_width != last_window_width || window_height != last_window_height) {
+            present = scale_to_window(canvas, window_width, window_height);
+            mfb_set_viewport(window, 0, 0, present.width, present.height);
+            last_window_width = window_width;
+            last_window_height = window_height;
+        }
+
         const mfb_update_state state = mfb_update_ex(window,
-                                                     const_cast<uint32_t*>(canvas.pixels.data()),
-                                                     canvas.width,
-                                                     canvas.height);
+                                                     const_cast<uint32_t*>(present.pixels.data()),
+                                                     present.width,
+                                                     present.height);
         if (state != MFB_STATE_OK) {
             break;
         }
@@ -595,14 +706,6 @@ int main(int argc, char* argv[]) {
         const uint8_t* keys = mfb_get_key_buffer(window);
         if (keys != nullptr && keys[MFB_KB_KEY_ESCAPE]) {
             break;
-        }
-
-        const unsigned window_width = mfb_get_window_width(window);
-        const unsigned window_height = mfb_get_window_height(window);
-        if (window_width != last_window_width || window_height != last_window_height) {
-            mfb_set_viewport_best_fit(window, canvas.width, canvas.height);
-            last_window_width = window_width;
-            last_window_height = window_height;
         }
 
         if (!mfb_wait_sync(window)) {

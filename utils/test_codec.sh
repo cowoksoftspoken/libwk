@@ -7,17 +7,38 @@ cd "$REPO_ROOT"
 
 export PATH="/c/msys64/ucrt64/bin:$PATH"
 
-INPUT_JPG="photos/1230927884722.jpg"
-WK_LOSSLESS="photos/1230927884722_lossless.wk"
-WK_LOSSY="photos/1230927884722_lossy.wk"
-DECODED_LOSSLESS="photos/decoded_lossless.png"
-DECODED_LOSSY="photos/decoded_lossy.png"
-META_JSON="photos/metadata.json"
+find_sample_photo() {
+    local preferred=(
+        "photos/people/ember-7f3a.jpg"
+        "photos/ember-7f3a.jpg"
+    )
+    local candidate
+    for candidate in "${preferred[@]}"; do
+        if [ -f "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
 
-if [ ! -f "$INPUT_JPG" ]; then
-    echo "ERROR: missing input photo: $INPUT_JPG"
+    find photos -type f \( -iname '*.jpg' -o -iname '*.jpeg' \) | sort | head -n 1
+}
+
+INPUT_JPG="$(find_sample_photo)"
+if [ -z "$INPUT_JPG" ] || [ ! -f "$INPUT_JPG" ]; then
+    echo "ERROR: missing input photo under photos/"
     exit 1
 fi
+
+INPUT_DIR="$(dirname -- "$INPUT_JPG")"
+INPUT_STEM="${INPUT_JPG%.*}"
+WK_LOSSLESS="${INPUT_STEM}_lossless.wk"
+WK_LOSSY="${INPUT_STEM}_lossy.wk"
+DECODED_LOSSLESS="${INPUT_DIR}/decoded_lossless.png"
+DECODED_LOSSY="${INPUT_DIR}/decoded_lossy.png"
+META_JSON="${INPUT_DIR}/metadata.json"
+
+echo "=== Input ==="
+echo "$INPUT_JPG"
 
 echo "=== Versions ==="
 ./build/wkenc.exe --version

@@ -16,6 +16,8 @@ namespace wk {
 
 namespace {
 
+constexpr uint32_t kLossyTileLayoutTag = 0x314d4843u;
+
 struct TileGeometry {
     uint32_t x0 = 0;
     uint32_t y0 = 0;
@@ -146,18 +148,6 @@ Result<ChromaSubsampling> infer_subsampling_from_tile(std::span<const uint8_t> t
     return geometry->subsampling;
 }
 
-PredMode select_chroma_predictor_mode(bool has_above, bool has_left) {
-    if (has_above && has_left) {
-        return PredMode::DC;
-    }
-    if (has_above) {
-        return PredMode::DC_TOP;
-    }
-    if (has_left) {
-        return PredMode::DC_LEFT;
-    }
-    return PredMode::DC_128;
-}
 Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
                                             uint16_t tile_x, uint16_t tile_y,
                                             uint32_t tile_size,
@@ -195,6 +185,14 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
     const uint16_t chroma_blocks_x = *chroma_blocks_x_read;
     const uint16_t chroma_blocks_y = *chroma_blocks_y_read;
 
+    auto layout_tag = reader.read_u32();
+    if (!layout_tag) {
+        return std::unexpected(Error{ErrorCode::TruncatedInput, "missing lossy tile layout tag"});
+    }
+    if (*layout_tag != kLossyTileLayoutTag) {
+        return std::unexpected(Error{ErrorCode::DecodeFailed, "unsupported lossy tile layout"});
+    }
+
     auto geometry = infer_tile_geometry(tile_x, tile_y, tile_size, image_width, image_height,
                                         blocks_x, blocks_y, chroma_blocks_x, chroma_blocks_y,
                                         subsampling);
@@ -211,6 +209,17 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
             return std::unexpected(Error{ErrorCode::PredictionError, "invalid prediction mode"});
         }
         y_modes[i] = static_cast<PredMode>(*mode);
+    }
+
+    const size_t num_c_blocks = static_cast<size_t>(chroma_blocks_x) * chroma_blocks_y;
+    std::vector<PredMode> chroma_modes(num_c_blocks);
+    for (size_t i = 0; i < num_c_blocks; ++i) {
+        auto mode = reader.read_u8();
+        if (!mode) return std::unexpected(mode.error());
+        if (*mode >= static_cast<uint8_t>(PredMode::NUM_MODES)) {
+            return std::unexpected(Error{ErrorCode::PredictionError, "invalid chroma prediction mode"});
+        }
+        chroma_modes[i] = static_cast<PredMode>(*mode);
     }
 
     auto decode_plane_coeffs = [&](size_t num_blocks) -> Result<std::vector<DctBlockI16>> {
@@ -267,7 +276,6 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
     auto y_coeffs = decode_plane_coeffs(num_y_blocks);
     if (!y_coeffs) return std::unexpected(y_coeffs.error());
 
-    const size_t num_c_blocks = static_cast<size_t>(chroma_blocks_x) * chroma_blocks_y;
     auto cb_coeffs = decode_plane_coeffs(num_c_blocks);
     if (!cb_coeffs) return std::unexpected(cb_coeffs.error());
     auto cr_coeffs = decode_plane_coeffs(num_c_blocks);
@@ -337,6 +345,7 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
     }
 
     auto reconstruct_chroma = [&](const std::vector<DctBlockI16>& coeffs,
+                                  const std::vector<PredMode>& modes,
                                   std::vector<int16_t>& plane) {
         const int16_t chroma_mid = static_cast<int16_t>((static_cast<int>(max_val) + 1) / 2);
         for (uint32_t by = 0; by < chroma_blocks_y; ++by) {
@@ -377,7 +386,8 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
                 }
 
                 int16_t prediction[64];
-                predict_8x8(select_chroma_predictor_mode(has_above, has_left),
+                const PredMode mode = modes[block_index];
+                predict_8x8(mode,
                             has_above ? above : nullptr,
                             has_left ? left : nullptr,
                             above_left,
@@ -399,8 +409,8 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         }
     };
 
-    reconstruct_chroma(*cb_coeffs, result.cb_plane);
-    reconstruct_chroma(*cr_coeffs, result.cr_plane);
+    reconstruct_chroma(*cb_coeffs, chroma_modes, result.cb_plane);
+    reconstruct_chroma(*cr_coeffs, chroma_modes, result.cr_plane);
 
     if (has_alpha != tile_has_alpha) {
         return std::unexpected(Error{ErrorCode::DecodeFailed,

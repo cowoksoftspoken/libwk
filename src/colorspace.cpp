@@ -1,6 +1,7 @@
 
 #include "colorspace.h"
 #include <algorithm>
+#include <cmath>
 
 namespace wk {
 
@@ -54,12 +55,12 @@ void rgb_to_ycbcr(int16_t* y_plane, int16_t* cb_plane, int16_t* cr_plane,
             double cr_value = 0.0;
             mat.transform(r, g, b, y_value, cb_value, cr_value);
 
-            y_plane[pixel_index] = static_cast<int16_t>(std::clamp(
-                y_value * y_scale + y_offset, 0.0, static_cast<double>(max_val)));
-            cb_plane[pixel_index] = static_cast<int16_t>(std::clamp(
-                cb_value * c_scale + c_offset, 0.0, static_cast<double>(max_val)));
-            cr_plane[pixel_index] = static_cast<int16_t>(std::clamp(
-                cr_value * c_scale + c_offset, 0.0, static_cast<double>(max_val)));
+            y_plane[pixel_index] = static_cast<int16_t>(std::lround(std::clamp(
+                y_value * y_scale + y_offset, 0.0, static_cast<double>(max_val))));
+            cb_plane[pixel_index] = static_cast<int16_t>(std::lround(std::clamp(
+                cb_value * c_scale + c_offset, 0.0, static_cast<double>(max_val))));
+            cr_plane[pixel_index] = static_cast<int16_t>(std::lround(std::clamp(
+                cr_value * c_scale + c_offset, 0.0, static_cast<double>(max_val))));
         }
     }
 }

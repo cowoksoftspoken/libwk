@@ -59,6 +59,8 @@ RdResult select_best_mode(const int16_t* original, const int16_t* above,
                            const int16_t* left, int16_t above_left,
                            float lambda, int16_t max_val);
 
+PredMode select_deterministic_mode(const int16_t* above, const int16_t* left,
+                                   int16_t above_left, int16_t max_val);
 
 float compute_ssd_8x8(const int16_t* a, const int16_t* b);
 

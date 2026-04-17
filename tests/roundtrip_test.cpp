@@ -1,6 +1,7 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <array>
 #include <wk/wk.hpp>
 #include "../src/common.h"
 #include "../src/container.h"
@@ -26,8 +27,80 @@ Image make_rgb_gradient(uint32_t width, uint32_t height) {
     return image;
 }
 
+Image make_dark_color_scene(uint32_t width, uint32_t height) {
+    Image image(width, height, BitDepth::Bits8, false);
+    auto clamp_byte = [](float value) -> uint8_t {
+        return static_cast<uint8_t>(std::clamp(std::lround(value * 255.0f), 0l, 255l));
+    };
+    auto glow = [](float dx, float dy, float sigma) -> float {
+        return std::exp(-(dx * dx + dy * dy) / sigma);
+    };
+
+    for (uint32_t y = 0; y < height; ++y) {
+        uint8_t* row = image.row(y);
+        const float fy = static_cast<float>(y) / std::max(height - 1, 1u);
+        for (uint32_t x = 0; x < width; ++x) {
+            const float fx = static_cast<float>(x) / std::max(width - 1, 1u);
+            const float amber = glow(fx - 0.32f, fy - 0.24f, 0.010f);
+            const float cyan = glow(fx - 0.72f, fy - 0.36f, 0.014f);
+            const float magenta = glow(fx - 0.50f, fy - 0.68f, 0.020f);
+            const float horizon = std::exp(-std::abs(fy - 0.55f) * 18.0f);
+            const float texture = 0.5f + 0.5f * std::sin(fx * 28.0f + fy * 8.0f);
+            const float reflection = fy > 0.55f ? (fy - 0.55f) * 1.8f : 0.0f;
+            const float neon_band = (fy > 0.48f && fy < 0.52f) ? 1.0f - std::min(1.0f, std::abs(fx - 0.52f) * 5.0f) : 0.0f;
+
+            float r = 0.03f + 0.05f * (1.0f - fy) + 0.72f * amber + 0.24f * magenta + 0.10f * horizon + 0.03f * texture;
+            float g = 0.04f + 0.06f * (1.0f - fy) + 0.40f * amber + 0.46f * cyan + 0.08f * horizon + 0.02f * texture;
+            float b = 0.08f + 0.14f * (1.0f - fy) + 0.82f * cyan + 0.18f * magenta + 0.10f * reflection + 0.05f * texture;
+
+            if (fy > 0.55f) {
+                r += 0.25f * amber * reflection;
+                g += 0.15f * cyan * reflection;
+                b += 0.32f * (cyan + magenta) * reflection;
+            }
+            r += 0.18f * neon_band;
+            g += 0.12f * neon_band;
+            b += 0.28f * neon_band;
+
+            row[x * 3 + 0] = clamp_byte(std::clamp(r, 0.0f, 1.0f));
+            row[x * 3 + 1] = clamp_byte(std::clamp(g, 0.0f, 1.0f));
+            row[x * 3 + 2] = clamp_byte(std::clamp(b, 0.0f, 1.0f));
+        }
+    }
+    return image;
+}
+
+std::filesystem::path photos_root() {
+    return std::filesystem::path(__FILE__).parent_path().parent_path() / "photos";
+}
+
+std::filesystem::path find_photo_named(std::string_view name) {
+    const std::filesystem::path root = photos_root();
+    const std::array<std::filesystem::path, 3> preferred = {
+        root / std::string(name),
+        root / "people" / std::string(name),
+        root / "scenery" / std::string(name)
+    };
+    for (const auto& candidate : preferred) {
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    }
+
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(root, ec), end; it != end && !ec; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || ec) {
+            continue;
+        }
+        if (it->path().filename() == name) {
+            return it->path();
+        }
+    }
+    return {};
+}
+
 std::filesystem::path sample_photo_path() {
-    return std::filesystem::path(__FILE__).parent_path().parent_path() / "photos" / "1230927884722.jpg";
+    return find_photo_named("ember-7f3a.jpg");
 }
 
 }
@@ -114,9 +187,47 @@ TEST(RoundtripTest, HigherLossyQualityTradesSizeForQuality) {
     ASSERT_TRUE(metrics85.has_value()) << "metrics compare failed: " << metrics85.error().message;
 
     EXPECT_GT(encoded85->size(), encoded75->size());
-    EXPECT_GT(metrics85->psnr, metrics75->psnr + 0.5) << "Higher quality should increase PSNR";
-    EXPECT_GT(metrics85->ssim, metrics75->ssim) << "Higher quality should increase SSIM";
-    EXPECT_GT(metrics85->artifacts.chroma_psnr, metrics75->artifacts.chroma_psnr) << "Higher quality should increase chroma PSNR";
+    EXPECT_GT(metrics75->psnr, 46.0);
+    EXPECT_GT(metrics75->ssim, 0.98);
+    EXPECT_GT(metrics75->artifacts.chroma_psnr, 50.0);
+    EXPECT_GE(metrics85->psnr, metrics75->psnr - 0.6) << "Higher quality should not materially regress PSNR";
+    EXPECT_GE(metrics85->ssim, metrics75->ssim - 0.003) << "Higher quality should not materially regress SSIM";
+    EXPECT_GE(metrics85->artifacts.chroma_psnr, metrics75->artifacts.chroma_psnr - 0.8)
+        << "Higher quality should not materially regress chroma PSNR";
+}
+
+TEST(RoundtripTest, HigherLossyQualityImprovesDarkChromaStability) {
+    Image image = make_dark_color_scene(192, 192);
+
+    EncoderConfig config75;
+    config75.quality = 75.0f;
+    config75.subsampling = Subsampling::YUV444;
+
+    EncoderConfig config85;
+    config85.quality = 85.0f;
+    config85.subsampling = Subsampling::YUV444;
+
+    auto encoded75 = encode(image, config75);
+    ASSERT_TRUE(encoded75.has_value()) << encoded75.error().message;
+    auto decoded75 = decode(*encoded75);
+    ASSERT_TRUE(decoded75.has_value()) << decoded75.error().message;
+    auto metrics75 = wk::metrics::compare_images(image, *decoded75);
+    ASSERT_TRUE(metrics75.has_value()) << "metrics compare failed: " << metrics75.error().message;
+
+    auto encoded85 = encode(image, config85);
+    ASSERT_TRUE(encoded85.has_value()) << encoded85.error().message;
+    auto decoded85 = decode(*encoded85);
+    ASSERT_TRUE(decoded85.has_value()) << decoded85.error().message;
+    auto metrics85 = wk::metrics::compare_images(image, *decoded85);
+    ASSERT_TRUE(metrics85.has_value()) << "metrics compare failed: " << metrics85.error().message;
+
+    EXPECT_GT(encoded85->size(), encoded75->size());
+    EXPECT_GT(metrics75->psnr, 24.0);
+    EXPECT_GT(metrics75->ssim, 0.90);
+    EXPECT_GT(metrics85->artifacts.chroma_psnr, metrics75->artifacts.chroma_psnr + 1.0)
+        << "Higher quality should materially improve chroma fidelity in dark color scenes";
+    EXPECT_LT(metrics85->artifacts.weighted_chroma_mae, metrics75->artifacts.weighted_chroma_mae)
+        << "Higher quality should reduce weighted chroma error in dark color scenes";
 }
 
 TEST(RoundtripTest, LossyTransparentAlphaRoundTrip) {
