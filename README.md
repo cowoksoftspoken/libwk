@@ -198,7 +198,7 @@ Benchmark utilities now live under `utils/`.
 ### Run the recursive corpus benchmark
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444
+.\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444
 ```
 
 That pass now walks the full `photos/` tree recursively, so `photos/people/` and `photos/scenery/` are both included automatically.
