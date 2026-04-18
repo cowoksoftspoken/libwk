@@ -446,60 +446,6 @@ void draw_info_block(DisplayBuffer& canvas, const ViewerPanel& panel, uint32_t x
     }
 }
 
-DisplayBuffer compose_compare(const ViewerPanel& decoded_panel,
-                              const ViewerPanel* source_panel) {
-    constexpr uint32_t outer_padding = 10;
-    constexpr uint32_t panel_gap = 16;
-    constexpr uint32_t label_height = 24;
-    constexpr uint32_t label_text_y = 8;
-    constexpr uint32_t info_gap = 10;
-
-    const uint32_t content_height = source_panel == nullptr
-        ? decoded_panel.image.height
-        : std::max(decoded_panel.image.height, source_panel->image.height);
-    const uint32_t info_height = std::max(info_block_height(decoded_panel),
-                                          source_panel == nullptr ? 0u : info_block_height(*source_panel));
-
-    DisplayBuffer canvas;
-    canvas.width = outer_padding * 2 + decoded_panel.image.width;
-    if (source_panel != nullptr) {
-        canvas.width += panel_gap + source_panel->image.width;
-    }
-    canvas.height = outer_padding * 2 + label_height + content_height + info_gap + info_height;
-    canvas.pixels.assign(static_cast<size_t>(canvas.width) * canvas.height, pack_rgba(24, 24, 24, 255));
-
-    const uint32_t decoded_x = outer_padding;
-    const uint32_t source_x = outer_padding + decoded_panel.image.width + panel_gap;
-    const uint32_t image_y = outer_padding + label_height;
-    const uint32_t info_y = image_y + content_height + info_gap;
-
-    fill_rect(canvas, decoded_x, outer_padding, decoded_panel.image.width, label_height, decoded_panel.label_bg);
-    draw_text(canvas,
-              decoded_x + 10,
-              outer_padding + label_text_y,
-              fit_label_text(normalize_label(decoded_panel.label), decoded_panel.image.width),
-              decoded_panel.label_text);
-    const uint32_t decoded_y = image_y + (content_height - decoded_panel.image.height) / 2u;
-    blit_image(canvas, decoded_panel.image, decoded_x, decoded_y);
-    draw_info_block(canvas, decoded_panel, decoded_x, info_y, decoded_panel.image.width, info_height);
-
-    if (source_panel != nullptr) {
-        fill_rect(canvas, decoded_panel.image.width + outer_padding, outer_padding, panel_gap,
-                  canvas.height - outer_padding * 2, pack_rgba(56, 56, 56, 255));
-        fill_rect(canvas, source_x, outer_padding, source_panel->image.width, label_height, source_panel->label_bg);
-        draw_text(canvas,
-                  source_x + 10,
-                  outer_padding + label_text_y,
-                  fit_label_text(normalize_label(source_panel->label), source_panel->image.width),
-                  source_panel->label_text);
-        const uint32_t source_y = image_y + (content_height - source_panel->image.height) / 2u;
-        blit_image(canvas, source_panel->image, source_x, source_y);
-        draw_info_block(canvas, *source_panel, source_x, info_y, source_panel->image.width, info_height);
-    }
-
-    return canvas;
-}
-
 struct FitRect {
     uint32_t x = 0;
     uint32_t y = 0;
@@ -553,39 +499,122 @@ uint32_t sample_bilinear(const DisplayBuffer& source, double src_x, double src_y
         interpolate_channel(channel_a(p00), channel_a(p10), channel_a(p01), channel_a(p11)));
 }
 
-DisplayBuffer scale_to_window(const DisplayBuffer& source, uint32_t window_width, uint32_t window_height) {
-    DisplayBuffer output;
-    output.width = std::max(1u, window_width);
-    output.height = std::max(1u, window_height);
-    output.pixels.assign(static_cast<size_t>(output.width) * output.height, pack_rgba(12, 12, 12, 255));
-
-    const FitRect fit = best_fit_rect(source.width, source.height, output.width, output.height);
-    if (fit.width == 0 || fit.height == 0) {
-        return output;
+void draw_scaled_image(DisplayBuffer& canvas,
+                       const DisplayBuffer& image,
+                       uint32_t x,
+                       uint32_t y,
+                       uint32_t width,
+                       uint32_t height,
+                       uint32_t background) {
+    fill_rect(canvas, x, y, width, height, background);
+    if (image.width == 0 || image.height == 0 || width == 0 || height == 0) {
+        return;
     }
 
-    const bool shrinking = fit.width < source.width || fit.height < source.height;
-    for (uint32_t y = 0; y < fit.height; ++y) {
-        for (uint32_t x = 0; x < fit.width; ++x) {
-            const double src_x = (static_cast<double>(x) + 0.5) * static_cast<double>(source.width) / static_cast<double>(fit.width) - 0.5;
-            const double src_y = (static_cast<double>(y) + 0.5) * static_cast<double>(source.height) / static_cast<double>(fit.height) - 0.5;
+    const FitRect fit = best_fit_rect(image.width, image.height, width, height);
+    if (fit.width == 0 || fit.height == 0) {
+        return;
+    }
+
+    if (fit.width == image.width && fit.height == image.height) {
+        blit_image(canvas, image, x + fit.x, y + fit.y);
+        return;
+    }
+
+    const bool shrinking = fit.width < image.width || fit.height < image.height;
+    for (uint32_t dst_y = 0; dst_y < fit.height; ++dst_y) {
+        for (uint32_t dst_x = 0; dst_x < fit.width; ++dst_x) {
+            const double src_x = (static_cast<double>(dst_x) + 0.5) * static_cast<double>(image.width) / static_cast<double>(fit.width) - 0.5;
+            const double src_y = (static_cast<double>(dst_y) + 0.5) * static_cast<double>(image.height) / static_cast<double>(fit.height) - 0.5;
 
             uint32_t pixel = 0;
             if (shrinking) {
-                pixel = sample_bilinear(source, src_x, src_y);
+                pixel = sample_bilinear(image, src_x, src_y);
             } else {
-                const uint32_t nearest_x = std::min(static_cast<uint32_t>(std::lround(std::clamp(src_x, 0.0, static_cast<double>(source.width - 1)))), source.width - 1);
-                const uint32_t nearest_y = std::min(static_cast<uint32_t>(std::lround(std::clamp(src_y, 0.0, static_cast<double>(source.height - 1)))), source.height - 1);
-                pixel = source.pixels[static_cast<size_t>(nearest_y) * source.width + nearest_x];
+                const uint32_t nearest_x = std::min(static_cast<uint32_t>(std::lround(std::clamp(src_x, 0.0, static_cast<double>(image.width - 1)))), image.width - 1);
+                const uint32_t nearest_y = std::min(static_cast<uint32_t>(std::lround(std::clamp(src_y, 0.0, static_cast<double>(image.height - 1)))), image.height - 1);
+                pixel = image.pixels[static_cast<size_t>(nearest_y) * image.width + nearest_x];
             }
 
-            output.pixels[static_cast<size_t>(fit.y + y) * output.width + (fit.x + x)] = pixel;
+            const uint32_t out_x = x + fit.x + dst_x;
+            const uint32_t out_y = y + fit.y + dst_y;
+            if (out_x < canvas.width && out_y < canvas.height) {
+                canvas.pixels[static_cast<size_t>(out_y) * canvas.width + out_x] = pixel;
+            }
         }
     }
-
-    return output;
 }
 
+DisplayBuffer compose_window(const ViewerPanel& decoded_panel,
+                             const ViewerPanel* source_panel,
+                             uint32_t window_width,
+                             uint32_t window_height) {
+    constexpr uint32_t outer_padding = 10;
+    constexpr uint32_t panel_gap = 16;
+    constexpr uint32_t label_height = 24;
+    constexpr uint32_t label_text_y = 8;
+    constexpr uint32_t info_gap = 10;
+    constexpr uint32_t min_image_height = 160;
+    const uint32_t panel_count = source_panel == nullptr ? 1u : 2u;
+
+    DisplayBuffer canvas;
+    canvas.width = std::max(1u, window_width);
+    canvas.height = std::max(1u, window_height);
+    canvas.pixels.assign(static_cast<size_t>(canvas.width) * canvas.height, pack_rgba(24, 24, 24, 255));
+
+    const uint32_t target_info_height = std::max(info_block_height(decoded_panel),
+                                                 source_panel == nullptr ? 0u : info_block_height(*source_panel));
+    const uint32_t base_reserved = outer_padding * 2 + label_height + info_gap;
+    uint32_t info_height = 0;
+    if (canvas.height > base_reserved + min_image_height) {
+        info_height = std::min(target_info_height, canvas.height - base_reserved - min_image_height);
+    }
+    const uint32_t image_height = std::max(1u, canvas.height - base_reserved - info_height);
+
+    const uint32_t available_width = canvas.width > outer_padding * 2 ? canvas.width - outer_padding * 2 : 1u;
+    const uint32_t divider_width = panel_count == 2 && available_width > 2u
+        ? std::min(panel_gap, available_width - 2u)
+        : 0u;
+    const uint32_t total_panel_width = available_width > divider_width ? available_width - divider_width : 1u;
+    const uint32_t decoded_width = panel_count == 2 ? std::max(1u, total_panel_width / 2u) : std::max(1u, total_panel_width);
+    const uint32_t source_width = panel_count == 2 ? total_panel_width - decoded_width : 0u;
+
+    const uint32_t label_y = outer_padding;
+    const uint32_t image_y = label_y + label_height;
+    const uint32_t info_y = image_y + image_height + info_gap;
+    const uint32_t image_bg = pack_rgba(10, 10, 10, 255);
+
+    auto draw_panel = [&](const ViewerPanel& panel, uint32_t x, uint32_t width) {
+        if (width == 0) {
+            return;
+        }
+        fill_rect(canvas, x, label_y, width, label_height, panel.label_bg);
+        draw_text(canvas,
+                  x + 10,
+                  label_y + label_text_y,
+                  fit_label_text(normalize_label(panel.label), width),
+                  panel.label_text);
+        draw_scaled_image(canvas, panel.image, x, image_y, width, image_height, image_bg);
+        if (info_height > 0) {
+            draw_info_block(canvas, panel, x, info_y, width, info_height);
+        }
+    };
+
+    draw_panel(decoded_panel, outer_padding, decoded_width);
+
+    if (source_panel != nullptr) {
+        const uint32_t divider_x = outer_padding + decoded_width;
+        fill_rect(canvas,
+                  divider_x,
+                  outer_padding,
+                  divider_width,
+                  canvas.height - outer_padding * 2,
+                  pack_rgba(56, 56, 56, 255));
+        draw_panel(*source_panel, divider_x + divider_width, source_width);
+    }
+
+    return canvas;
+}
 
 std::string make_title(std::string_view wk_path, const wk::ImageInfo& info, std::string_view source_path) {
     std::filesystem::path wk_file{std::string(wk_path)};
@@ -667,9 +696,18 @@ int main(int argc, char* argv[]) {
         source_ptr = &source_panel;
     }
 
-    const DisplayBuffer canvas = compose_compare(decoded_panel, source_ptr);
-    const unsigned initial_width = std::min(canvas.width, 1800u);
-    const unsigned initial_height = std::min(canvas.height, 1000u);
+    const uint32_t preferred_content_height = std::max(decoded_panel.image.height,
+                                                       source_ptr == nullptr ? 0u : source_ptr->image.height);
+    const uint32_t preferred_info_height = std::max(info_block_height(decoded_panel),
+                                                    source_ptr == nullptr ? 0u : info_block_height(*source_ptr));
+    const uint32_t preferred_width = source_ptr == nullptr
+        ? decoded_panel.image.width + 20u
+        : decoded_panel.image.width + source_ptr->image.width + 36u;
+    const uint32_t preferred_height = preferred_content_height + preferred_info_height + 54u;
+    const unsigned initial_width = static_cast<unsigned>(std::clamp<uint32_t>(preferred_width,
+                                                                              source_ptr == nullptr ? 720u : 1200u,
+                                                                              1800u));
+    const unsigned initial_height = static_cast<unsigned>(std::clamp<uint32_t>(preferred_height, 520u, 1000u));
 
     mfb_window* window = mfb_open_ex(make_title(wk_path, *info, source_path).c_str(),
                                      initial_width,
@@ -680,7 +718,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    DisplayBuffer present = scale_to_window(canvas, initial_width, initial_height);
+    DisplayBuffer present = compose_window(decoded_panel, source_ptr, initial_width, initial_height);
     mfb_set_viewport(window, 0, 0, present.width, present.height);
     unsigned last_window_width = 0;
     unsigned last_window_height = 0;
@@ -689,7 +727,7 @@ int main(int argc, char* argv[]) {
         const unsigned window_width = std::max(1u, mfb_get_window_width(window));
         const unsigned window_height = std::max(1u, mfb_get_window_height(window));
         if (window_width != last_window_width || window_height != last_window_height) {
-            present = scale_to_window(canvas, window_width, window_height);
+            present = compose_window(decoded_panel, source_ptr, window_width, window_height);
             mfb_set_viewport(window, 0, 0, present.width, present.height);
             last_window_width = window_width;
             last_window_height = window_height;
@@ -702,7 +740,6 @@ int main(int argc, char* argv[]) {
         if (state != MFB_STATE_OK) {
             break;
         }
-
         const uint8_t* keys = mfb_get_key_buffer(window);
         if (keys != nullptr && keys[MFB_KB_KEY_ESCAPE]) {
             break;

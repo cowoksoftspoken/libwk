@@ -53,7 +53,8 @@ public:
         else if (bit_depth == 12) bd_mul = 16.0f;
 
         for (int i = 0; i < 64; i++) {
-            float base_value = static_cast<float>(base[i]);
+            const int natural_index = ZIGZAG_ORDER[i];
+            float base_value = static_cast<float>(base[natural_index]);
             if (is_chroma_) {
                 base_value *= chroma_step_scale(i);
             }
@@ -96,15 +97,15 @@ private:
 
         if (quality_ >= 90.0f) {
             if (zigzag_index == 0) return 0.58f;
-            if (zigzag_index < 8) return 0.54f;
-            if (zigzag_index < 24) return 0.50f;
-            return 0.62f;
+            if (zigzag_index < 8) return 0.56f;
+            if (zigzag_index < 24) return 0.58f;
+            return 0.72f;
         }
         if (quality_ >= 85.0f) {
             if (zigzag_index == 0) return 0.64f;
-            if (zigzag_index < 8) return 0.60f;
-            if (zigzag_index < 24) return 0.56f;
-            return 0.68f;
+            if (zigzag_index < 8) return 0.62f;
+            if (zigzag_index < 24) return 0.63f;
+            return 0.78f;
         }
         if (quality_ >= 75.0f) {
             if (zigzag_index == 0) return 0.72f;
@@ -126,7 +127,7 @@ private:
 
         float scale = is_chroma_ ? 0.46f : 0.52f;
         if (quality_ >= 85.0f) {
-            scale += is_chroma_ ? -0.01f : 0.03f;
+            scale += is_chroma_ ? 0.02f : 0.03f;
         } else if (quality_ >= 75.0f) {
             scale += is_chroma_ ? 0.0f : 0.01f;
         }
