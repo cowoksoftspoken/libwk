@@ -5,12 +5,13 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -35,6 +36,82 @@ struct ViewerPanel {
     uint32_t info_text = 0;
 };
 
+struct ViewerItem {
+    std::filesystem::path wk_path;
+    std::filesystem::path source_path;
+    std::string display_name;
+    bool has_source = false;
+};
+
+struct ViewerDocument {
+    std::filesystem::path wk_path;
+    std::optional<wk::ImageInfo> info;
+    ViewerPanel decoded_panel;
+    std::optional<ViewerPanel> source_panel;
+};
+
+struct Rect {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+
+    [[nodiscard]] bool contains(int px, int py) const {
+        return px >= static_cast<int>(x) &&
+               py >= static_cast<int>(y) &&
+               px < static_cast<int>(x + width) &&
+               py < static_cast<int>(y + height);
+    }
+};
+
+struct ViewerLayout {
+    Rect header;
+    Rect body;
+    Rect sidebar;
+    Rect sidebar_header;
+    Rect sidebar_list;
+    Rect content;
+    Rect image_area;
+    Rect details_area;
+    Rect footer;
+    Rect left_panel;
+    Rect right_panel;
+    Rect left_label;
+    Rect right_label;
+    Rect left_image;
+    Rect right_image;
+    Rect left_info;
+    Rect right_info;
+    bool has_sidebar = false;
+    bool has_compare = false;
+    bool has_details = false;
+    uint32_t sidebar_row_height = 18;
+    uint32_t visible_rows = 0;
+};
+
+struct SourceMatcher {
+    std::filesystem::path initial_wk;
+    std::filesystem::path explicit_file;
+    std::vector<std::filesystem::path> candidates;
+};
+
+struct ViewerState {
+    std::vector<ViewerItem> items;
+    size_t current_index = 0;
+    bool show_list = true;
+    bool show_details = true;
+    bool compare_requested = true;
+    uint32_t list_scroll = 0;
+    bool dirty = true;
+    unsigned last_window_width = 0;
+    unsigned last_window_height = 0;
+    ViewerLayout layout;
+    DisplayBuffer present;
+    ViewerDocument document;
+    std::array<uint8_t, static_cast<size_t>(MFB_KB_KEY_LAST) + 1> previous_keys{};
+    std::array<uint8_t, 8> previous_mouse_buttons{};
+};
+
 using Glyph = std::array<uint8_t, 7>;
 
 std::string lowercase_ascii(std::string_view text) {
@@ -43,6 +120,182 @@ std::string lowercase_ascii(std::string_view text) {
         return static_cast<char>(std::tolower(ch));
     });
     return result;
+}
+
+std::string normalize_match_text(std::string_view text) {
+    std::string result;
+    result.reserve(text.size());
+
+    bool previous_underscore = false;
+    for (unsigned char ch : text) {
+        char out = 0;
+        if (std::isalnum(ch) != 0) {
+            out = static_cast<char>(std::tolower(ch));
+            previous_underscore = false;
+        } else {
+            if (previous_underscore) {
+                continue;
+            }
+            out = '_';
+            previous_underscore = true;
+        }
+        result.push_back(out);
+    }
+
+    while (!result.empty() && result.front() == '_') {
+        result.erase(result.begin());
+    }
+    while (!result.empty() && result.back() == '_') {
+        result.pop_back();
+    }
+    return result;
+}
+
+std::vector<std::string> split_tokens(std::string_view text) {
+    std::vector<std::string> tokens;
+    std::string current;
+    for (char ch : text) {
+        if (ch == '_') {
+            if (!current.empty()) {
+                tokens.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        current.push_back(ch);
+    }
+    if (!current.empty()) {
+        tokens.push_back(current);
+    }
+    return tokens;
+}
+
+std::string join_tokens(const std::vector<std::string>& tokens, size_t begin, size_t end) {
+    std::string joined;
+    for (size_t i = begin; i < end; ++i) {
+        if (!joined.empty()) {
+            joined.push_back('_');
+        }
+        joined += tokens[i];
+    }
+    return joined;
+}
+
+void add_unique_text(std::vector<std::string>& values, const std::string& value) {
+    if (value.empty()) {
+        return;
+    }
+    if (std::find(values.begin(), values.end(), value) == values.end()) {
+        values.push_back(value);
+    }
+}
+
+bool is_profile_token(std::string_view token) {
+    if (token == "srcjpeg" || token == "yuv444" || token == "yuv420" ||
+        token == "lossless" || token == "lossy" || token == "clean") {
+        return true;
+    }
+    if (token.size() >= 2 && token.front() == 'q') {
+        return std::all_of(token.begin() + 1, token.end(), [](unsigned char ch) {
+            return std::isdigit(ch) != 0;
+        });
+    }
+    return false;
+}
+
+std::vector<std::string> build_match_keys(std::string_view stem) {
+    std::vector<std::string> keys;
+    const std::string normalized = normalize_match_text(stem);
+    add_unique_text(keys, normalized);
+
+    auto tokens = split_tokens(normalized);
+    while (tokens.size() > 1 && is_profile_token(tokens.back())) {
+        tokens.pop_back();
+    }
+
+    add_unique_text(keys, join_tokens(tokens, 0, tokens.size()));
+    if (tokens.size() > 1) {
+        add_unique_text(keys, join_tokens(tokens, 1, tokens.size()));
+        add_unique_text(keys, join_tokens(tokens, tokens.size() - 1, tokens.size()));
+    }
+    if (tokens.size() > 2) {
+        add_unique_text(keys, join_tokens(tokens, tokens.size() - 2, tokens.size()));
+    }
+
+    return keys;
+}
+
+int score_match_key(std::string_view key, std::string_view candidate) {
+    if (key.empty() || candidate.empty()) {
+        return 0;
+    }
+    if (key == candidate) {
+        return 500;
+    }
+    if (key.size() > candidate.size() && key.find(candidate) != std::string_view::npos) {
+        return 280;
+    }
+    if (candidate.size() > key.size() && candidate.find(key) != std::string_view::npos) {
+        return 200;
+    }
+    const std::string suffix = "_" + std::string(candidate);
+    const std::string prefix = std::string(candidate) + "_";
+    if (key.ends_with(suffix) || key.starts_with(prefix)) {
+        return 340;
+    }
+    return 0;
+}
+
+std::string canonical_key(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto weak = std::filesystem::weakly_canonical(path, ec);
+    const std::filesystem::path normalized = ec ? path.lexically_normal() : weak;
+    return lowercase_ascii(normalized.generic_string());
+}
+
+bool is_wk_file(const std::filesystem::path& path) {
+    return lowercase_ascii(path.extension().string()) == ".wk";
+}
+
+bool is_source_image_file(const std::filesystem::path& path) {
+    const std::string ext = lowercase_ascii(path.extension().string());
+    return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".ppm";
+}
+
+template <typename Predicate>
+std::vector<std::filesystem::path> collect_files(const std::filesystem::path& root,
+                                                 bool recursive,
+                                                 Predicate predicate) {
+    std::vector<std::filesystem::path> files;
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec) || ec) {
+        return files;
+    }
+
+    if (recursive) {
+        for (std::filesystem::recursive_directory_iterator it(root, ec), end; it != end && !ec; it.increment(ec)) {
+            if (!it->is_regular_file(ec) || ec) {
+                continue;
+            }
+            if (predicate(it->path())) {
+                files.push_back(it->path());
+            }
+        }
+    } else {
+        for (std::filesystem::directory_iterator it(root, ec), end; it != end && !ec; it.increment(ec)) {
+            if (!it->is_regular_file(ec) || ec) {
+                continue;
+            }
+            if (predicate(it->path())) {
+                files.push_back(it->path());
+            }
+        }
+    }
+
+    std::sort(files.begin(), files.end(), [](const std::filesystem::path& lhs, const std::filesystem::path& rhs) {
+        return lowercase_ascii(lhs.generic_string()) < lowercase_ascii(rhs.generic_string());
+    });
+    return files;
 }
 
 std::vector<std::filesystem::path> suggest_similar_files(std::string_view path) {
@@ -323,6 +576,24 @@ void draw_text(DisplayBuffer& buffer, uint32_t x, uint32_t y, std::string_view t
     }
 }
 
+DisplayBuffer make_placeholder_image(uint32_t width, uint32_t height, uint32_t background, uint32_t accent) {
+    DisplayBuffer image;
+    image.width = width;
+    image.height = height;
+    image.pixels.assign(static_cast<size_t>(width) * height, background);
+
+    fill_rect(image, 0, 0, width, 2, accent);
+    fill_rect(image, 0, height >= 2 ? height - 2 : 0, width, std::min(2u, height), accent);
+    fill_rect(image, 0, 0, 2, height, accent);
+    fill_rect(image, width >= 2 ? width - 2 : 0, 0, std::min(2u, width), height, accent);
+
+    for (uint32_t i = 0; i < std::min(width, height); ++i) {
+        image.pixels[static_cast<size_t>(i) * width + i] = accent;
+        image.pixels[static_cast<size_t>(height - 1 - i) * width + i] = accent;
+    }
+    return image;
+}
+
 DisplayBuffer rasterize(const wk::Image& image) {
     DisplayBuffer display;
     display.width = image.width();
@@ -424,23 +695,58 @@ std::vector<std::string> make_source_info_lines(std::string_view path, uintmax_t
     };
 }
 
+std::vector<std::string> make_error_lines(std::string_view path, std::string_view message) {
+    return {
+        "FILE: " + std::filesystem::path(std::string(path)).filename().string(),
+        "STATUS: ERROR",
+        "MESSAGE: " + std::string(message)
+    };
+}
+
+ViewerPanel make_message_panel(std::string label,
+                               std::vector<std::string> info_lines,
+                               uint32_t label_bg,
+                               uint32_t label_text,
+                               uint32_t info_bg,
+                               uint32_t info_text,
+                               uint32_t image_bg,
+                               uint32_t image_accent) {
+    ViewerPanel panel;
+    panel.image = make_placeholder_image(256, 160, image_bg, image_accent);
+    panel.label = std::move(label);
+    panel.info_lines = std::move(info_lines);
+    panel.label_bg = label_bg;
+    panel.label_text = label_text;
+    panel.info_bg = info_bg;
+    panel.info_text = info_text;
+    return panel;
+}
+
 uint32_t info_block_height(const ViewerPanel& panel) {
     constexpr uint32_t line_height = 10;
     constexpr uint32_t padding_y = 8;
     return padding_y * 2 + static_cast<uint32_t>(panel.info_lines.size()) * line_height;
 }
 
-void draw_info_block(DisplayBuffer& canvas, const ViewerPanel& panel, uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
-    fill_rect(canvas, x, y, width, height, panel.info_bg);
+void draw_info_block(DisplayBuffer& canvas, const ViewerPanel& panel, const Rect& rect) {
+    if (rect.width == 0 || rect.height == 0) {
+        return;
+    }
+
+    fill_rect(canvas, rect.x, rect.y, rect.width, rect.height, panel.info_bg);
     constexpr uint32_t line_height = 10;
     constexpr uint32_t padding_x = 10;
     constexpr uint32_t padding_y = 8;
-    uint32_t cursor_y = y + padding_y;
+
+    uint32_t cursor_y = rect.y + padding_y;
     for (const std::string& line : panel.info_lines) {
+        if (cursor_y + 7 > rect.y + rect.height) {
+            break;
+        }
         draw_text(canvas,
-                  x + padding_x,
+                  rect.x + padding_x,
                   cursor_y,
-                  fit_label_text(normalize_label(line), width),
+                  fit_label_text(normalize_label(line), rect.width),
                   panel.info_text);
         cursor_y += line_height;
     }
@@ -501,23 +807,24 @@ uint32_t sample_bilinear(const DisplayBuffer& source, double src_x, double src_y
 
 void draw_scaled_image(DisplayBuffer& canvas,
                        const DisplayBuffer& image,
-                       uint32_t x,
-                       uint32_t y,
-                       uint32_t width,
-                       uint32_t height,
+                       const Rect& rect,
                        uint32_t background) {
-    fill_rect(canvas, x, y, width, height, background);
-    if (image.width == 0 || image.height == 0 || width == 0 || height == 0) {
+    if (rect.width == 0 || rect.height == 0) {
         return;
     }
 
-    const FitRect fit = best_fit_rect(image.width, image.height, width, height);
+    fill_rect(canvas, rect.x, rect.y, rect.width, rect.height, background);
+    if (image.width == 0 || image.height == 0) {
+        return;
+    }
+
+    const FitRect fit = best_fit_rect(image.width, image.height, rect.width, rect.height);
     if (fit.width == 0 || fit.height == 0) {
         return;
     }
 
     if (fit.width == image.width && fit.height == image.height) {
-        blit_image(canvas, image, x + fit.x, y + fit.y);
+        blit_image(canvas, image, rect.x + fit.x, rect.y + fit.y);
         return;
     }
 
@@ -536,8 +843,8 @@ void draw_scaled_image(DisplayBuffer& canvas,
                 pixel = image.pixels[static_cast<size_t>(nearest_y) * image.width + nearest_x];
             }
 
-            const uint32_t out_x = x + fit.x + dst_x;
-            const uint32_t out_y = y + fit.y + dst_y;
+            const uint32_t out_x = rect.x + fit.x + dst_x;
+            const uint32_t out_y = rect.y + fit.y + dst_y;
             if (out_x < canvas.width && out_y < canvas.height) {
                 canvas.pixels[static_cast<size_t>(out_y) * canvas.width + out_x] = pixel;
             }
@@ -545,102 +852,680 @@ void draw_scaled_image(DisplayBuffer& canvas,
     }
 }
 
-DisplayBuffer compose_window(const ViewerPanel& decoded_panel,
-                             const ViewerPanel* source_panel,
-                             uint32_t window_width,
-                             uint32_t window_height) {
+std::string make_playlist_label(const std::filesystem::path& path, const std::filesystem::path& root) {
+    std::error_code ec;
+    std::filesystem::path relative = std::filesystem::relative(path, root, ec);
+    std::string label = ec || relative.empty() ? path.filename().string() : relative.generic_string();
+    std::replace(label.begin(), label.end(), '/', ' ');
+    std::replace(label.begin(), label.end(), '\\', ' ');
+    if (label.empty()) {
+        label = path.filename().string();
+    }
+    return label;
+}
+
+SourceMatcher build_source_matcher(std::string_view source_hint, const std::filesystem::path& initial_wk) {
+    SourceMatcher matcher;
+    matcher.initial_wk = initial_wk;
+
+    std::filesystem::path hint_path;
+    if (!source_hint.empty()) {
+        hint_path = std::filesystem::path(std::string(source_hint));
+    }
+
+    std::error_code ec;
+    if (!hint_path.empty() && std::filesystem::is_regular_file(hint_path, ec) && !ec && is_source_image_file(hint_path)) {
+        matcher.explicit_file = hint_path;
+        matcher.candidates = collect_files(hint_path.parent_path(), false, is_source_image_file);
+        return matcher;
+    }
+
+    std::filesystem::path search_root = hint_path;
+    if (search_root.empty()) {
+        search_root = initial_wk.parent_path().empty() ? std::filesystem::path(".") : initial_wk.parent_path();
+    }
+
+    if (std::filesystem::is_directory(search_root, ec) && !ec) {
+        matcher.candidates = collect_files(search_root, false, is_source_image_file);
+        if (matcher.candidates.empty()) {
+            matcher.candidates = collect_files(search_root, true, is_source_image_file);
+        }
+    }
+
+    return matcher;
+}
+
+std::optional<std::filesystem::path> resolve_source_path(const std::filesystem::path& wk_path,
+                                                         const SourceMatcher& matcher) {
+    if (!matcher.explicit_file.empty() && canonical_key(wk_path) == canonical_key(matcher.initial_wk)) {
+        return matcher.explicit_file;
+    }
+    if (matcher.candidates.empty()) {
+        return std::nullopt;
+    }
+
+    const std::vector<std::string> match_keys = build_match_keys(wk_path.stem().string());
+
+    int best_score = 0;
+    std::optional<std::filesystem::path> best_path;
+    for (const auto& candidate : matcher.candidates) {
+        const std::string candidate_key = normalize_match_text(candidate.stem().string());
+        int score = 0;
+        for (const std::string& key : match_keys) {
+            score = std::max(score, score_match_key(key, candidate_key));
+        }
+
+        const std::string ext = lowercase_ascii(candidate.extension().string());
+        if (ext == ".jpg" || ext == ".jpeg") {
+            score += 8;
+        } else if (ext == ".png") {
+            score += 4;
+        }
+
+        if (score > best_score) {
+            best_score = score;
+            best_path = candidate;
+        }
+    }
+
+    if (best_score <= 0) {
+        return std::nullopt;
+    }
+    return best_path;
+}
+
+wk::Result<std::pair<std::vector<ViewerItem>, size_t>> build_playlist(std::string_view input_path,
+                                                                      std::string_view source_hint) {
+    std::filesystem::path requested{std::string(input_path)};
+    std::error_code ec;
+    if (!std::filesystem::exists(requested, ec) || ec) {
+        return std::unexpected(wk::Error{wk::ErrorCode::IoError, make_missing_file_message(input_path)});
+    }
+
+    std::vector<std::filesystem::path> files;
+    std::filesystem::path list_root;
+    size_t current_index = 0;
+
+    if (std::filesystem::is_regular_file(requested, ec) && !ec) {
+        if (!is_wk_file(requested)) {
+            return std::unexpected(wk::Error{wk::ErrorCode::InvalidParameter, "wkview expects a .wk file or a directory of .wk files"});
+        }
+        list_root = requested.parent_path().empty() ? std::filesystem::path(".") : requested.parent_path();
+        files = collect_files(list_root, false, is_wk_file);
+        if (files.empty()) {
+            files.push_back(requested);
+        }
+
+        const std::string requested_key = canonical_key(requested);
+        for (size_t i = 0; i < files.size(); ++i) {
+            if (canonical_key(files[i]) == requested_key) {
+                current_index = i;
+                break;
+            }
+        }
+    } else if (std::filesystem::is_directory(requested, ec) && !ec) {
+        list_root = requested;
+        files = collect_files(requested, false, is_wk_file);
+        if (files.empty()) {
+            files = collect_files(requested, true, is_wk_file);
+        }
+        if (files.empty()) {
+            return std::unexpected(wk::Error{wk::ErrorCode::IoError, "no .wk files found in directory: " + requested.generic_string()});
+        }
+    } else {
+        return std::unexpected(wk::Error{wk::ErrorCode::IoError, "unsupported input path: " + requested.generic_string()});
+    }
+
+    SourceMatcher matcher = build_source_matcher(source_hint, files[current_index]);
+    std::vector<ViewerItem> items;
+    items.reserve(files.size());
+
+    for (const auto& file : files) {
+        ViewerItem item;
+        item.wk_path = file;
+        item.display_name = make_playlist_label(file, list_root);
+        auto source = resolve_source_path(file, matcher);
+        if (source) {
+            item.source_path = *source;
+            item.has_source = true;
+        }
+        items.push_back(std::move(item));
+    }
+
+    return std::make_pair(std::move(items), current_index);
+}
+
+ViewerDocument load_document(const ViewerItem& item) {
+    ViewerDocument document;
+    document.wk_path = item.wk_path;
+
+    auto wk_bytes = read_file_bytes(item.wk_path.generic_string());
+    if (!wk_bytes) {
+        document.decoded_panel = make_message_panel(
+            "WK: " + item.wk_path.filename().string(),
+            make_error_lines(item.wk_path.generic_string(), wk_bytes.error().message),
+            pack_rgba(160, 64, 64, 255),
+            pack_rgba(255, 240, 240, 255),
+            pack_rgba(48, 24, 24, 255),
+            pack_rgba(255, 220, 220, 255),
+            pack_rgba(24, 12, 12, 255),
+            pack_rgba(210, 90, 90, 255));
+        return document;
+    }
+
+    auto info = wk::get_info(*wk_bytes);
+    if (!info) {
+        document.decoded_panel = make_message_panel(
+            "WK: " + item.wk_path.filename().string(),
+            make_error_lines(item.wk_path.generic_string(), info.error().message),
+            pack_rgba(160, 64, 64, 255),
+            pack_rgba(255, 240, 240, 255),
+            pack_rgba(48, 24, 24, 255),
+            pack_rgba(255, 220, 220, 255),
+            pack_rgba(24, 12, 12, 255),
+            pack_rgba(210, 90, 90, 255));
+        return document;
+    }
+
+    auto decoded = wk::decode(*wk_bytes);
+    if (!decoded) {
+        document.decoded_panel = make_message_panel(
+            "WK: " + item.wk_path.filename().string(),
+            make_error_lines(item.wk_path.generic_string(), decoded.error().message),
+            pack_rgba(160, 64, 64, 255),
+            pack_rgba(255, 240, 240, 255),
+            pack_rgba(48, 24, 24, 255),
+            pack_rgba(255, 220, 220, 255),
+            pack_rgba(24, 12, 12, 255),
+            pack_rgba(210, 90, 90, 255));
+        return document;
+    }
+
+    document.info = *info;
+    document.decoded_panel.image = rasterize(*decoded);
+    document.decoded_panel.label = "WK: " + item.wk_path.filename().string();
+    document.decoded_panel.info_lines = make_wk_info_lines(item.wk_path.generic_string(),
+                                                           file_size_or_zero(item.wk_path.generic_string()),
+                                                           *info);
+    document.decoded_panel.label_bg = pack_rgba(168, 112, 24, 255);
+    document.decoded_panel.label_text = pack_rgba(255, 245, 220, 255);
+    document.decoded_panel.info_bg = pack_rgba(44, 34, 18, 255);
+    document.decoded_panel.info_text = pack_rgba(255, 236, 196, 255);
+
+    if (!item.has_source) {
+        return document;
+    }
+
+    auto source_image = load_image_file(item.source_path.generic_string());
+    if (!source_image) {
+        document.source_panel = make_message_panel(
+            "SOURCE: " + item.source_path.filename().string(),
+            make_error_lines(item.source_path.generic_string(), source_image.error().message),
+            pack_rgba(88, 72, 132, 255),
+            pack_rgba(245, 238, 255, 255),
+            pack_rgba(26, 22, 44, 255),
+            pack_rgba(235, 228, 255, 255),
+            pack_rgba(15, 12, 24, 255),
+            pack_rgba(136, 120, 200, 255));
+        return document;
+    }
+
+    ViewerPanel source_panel;
+    source_panel.image = rasterize(*source_image);
+    source_panel.label = "SOURCE: " + item.source_path.filename().string();
+    source_panel.info_lines = make_source_info_lines(item.source_path.generic_string(),
+                                                     file_size_or_zero(item.source_path.generic_string()),
+                                                     *source_image);
+    source_panel.label_bg = pack_rgba(26, 100, 128, 255);
+    source_panel.label_text = pack_rgba(232, 248, 255, 255);
+    source_panel.info_bg = pack_rgba(18, 39, 54, 255);
+    source_panel.info_text = pack_rgba(220, 244, 255, 255);
+    document.source_panel = std::move(source_panel);
+
+    return document;
+}
+
+std::string build_window_title(const ViewerState& state) {
+    const ViewerItem& item = state.items[state.current_index];
+    std::string title = "WK Viewer - ";
+    title += item.wk_path.filename().string();
+    title += " - ";
+    title += std::to_string(state.current_index + 1);
+    title += " of ";
+    title += std::to_string(state.items.size());
+
+    if (state.document.info) {
+        title += " - ";
+        title += std::to_string(state.document.info->width);
+        title += 'x';
+        title += std::to_string(state.document.info->height);
+        title += " - ";
+        title += state.document.info->is_lossless ? "LOSSLESS" : "LOSSY";
+    } else {
+        title += " - ERROR";
+    }
+
+    if (state.compare_requested && state.document.source_panel.has_value()) {
+        title += " - compare ";
+        title += state.document.source_panel->label.substr(8);
+    }
+
+    return title;
+}
+
+std::string make_header_text(const ViewerState& state) {
+    const ViewerItem& item = state.items[state.current_index];
+    std::string text = std::to_string(state.current_index + 1);
+    text += " OF ";
+    text += std::to_string(state.items.size());
+    text += "  ";
+    text += item.display_name;
+    if (state.document.info) {
+        text += "  ";
+        text += state.document.info->is_lossless ? "LOSSLESS" : "LOSSY";
+        text += "  ";
+        text += std::to_string(state.document.info->width);
+        text += "X";
+        text += std::to_string(state.document.info->height);
+    }
+    return text;
+}
+
+std::string make_footer_text(const ViewerState& state) {
+    std::string text = "LEFT RIGHT NAV  UP DOWN LIST  CLICK SELECT  I DETAILS  L LIBRARY  TAB COMPARE  ESC EXIT";
+    if (!state.document.source_panel.has_value()) {
+        text += "  SOURCE NONE";
+    } else if (!state.compare_requested) {
+        text += "  COMPARE OFF";
+    } else {
+        text += "  COMPARE ON";
+    }
+    return text;
+}
+
+ViewerLayout compute_layout(const ViewerState& state, uint32_t window_width, uint32_t window_height) {
+    ViewerLayout layout;
     constexpr uint32_t outer_padding = 10;
+    constexpr uint32_t section_gap = 12;
+    constexpr uint32_t header_height = 28;
+    constexpr uint32_t footer_height = 24;
     constexpr uint32_t panel_gap = 16;
     constexpr uint32_t label_height = 24;
-    constexpr uint32_t label_text_y = 8;
-    constexpr uint32_t info_gap = 10;
-    constexpr uint32_t min_image_height = 160;
-    const uint32_t panel_count = source_panel == nullptr ? 1u : 2u;
+    constexpr uint32_t min_image_height = 170;
+
+    const uint32_t safe_width = std::max(1u, window_width);
+    const uint32_t safe_height = std::max(1u, window_height);
+
+    layout.header = {outer_padding, outer_padding, safe_width > outer_padding * 2 ? safe_width - outer_padding * 2 : 1u, header_height};
+    layout.footer = {outer_padding,
+                     safe_height > outer_padding + footer_height ? safe_height - outer_padding - footer_height : 0u,
+                     layout.header.width,
+                     footer_height};
+
+    const uint32_t body_y = layout.header.y + layout.header.height + section_gap;
+    const uint32_t body_height = layout.footer.y > body_y + section_gap ? layout.footer.y - body_y - section_gap : 1u;
+    layout.body = {outer_padding, body_y, layout.header.width, body_height};
+
+    layout.has_sidebar = state.show_list && state.items.size() > 1 && layout.body.width >= 860u;
+    uint32_t sidebar_width = 0;
+    if (layout.has_sidebar) {
+        sidebar_width = std::clamp(layout.body.width / 4u, 220u, 320u);
+        layout.sidebar = {layout.body.x, layout.body.y, sidebar_width, layout.body.height};
+        layout.sidebar_header = {layout.sidebar.x, layout.sidebar.y, layout.sidebar.width, 24u};
+        const uint32_t sidebar_list_y = layout.sidebar_header.y + layout.sidebar_header.height + 8u;
+        const uint32_t sidebar_list_height = layout.sidebar.height > 36u ? layout.sidebar.height - 36u : 1u;
+        layout.sidebar_list = {layout.sidebar.x + 6u, sidebar_list_y, layout.sidebar.width > 12u ? layout.sidebar.width - 12u : 1u, sidebar_list_height};
+        layout.visible_rows = std::max(1u, layout.sidebar_list.height / layout.sidebar_row_height);
+    }
+
+    layout.content = layout.body;
+    if (layout.has_sidebar) {
+        const uint32_t content_x = layout.sidebar.x + layout.sidebar.width + section_gap;
+        layout.content = {
+            content_x,
+            layout.body.y,
+            layout.body.x + layout.body.width > content_x ? layout.body.x + layout.body.width - content_x : 1u,
+            layout.body.height
+        };
+    }
+
+    layout.has_compare = state.compare_requested && state.document.source_panel.has_value();
+    const uint32_t target_details_height = std::clamp<uint32_t>(
+        std::max(info_block_height(state.document.decoded_panel),
+                 layout.has_compare ? info_block_height(*state.document.source_panel) : 0u),
+        84u,
+        140u);
+
+    layout.has_details = state.show_details && layout.content.height > min_image_height + target_details_height + section_gap;
+    const uint32_t details_height = layout.has_details ? target_details_height : 0u;
+    if (layout.has_details) {
+        layout.details_area = {
+            layout.content.x,
+            layout.content.y + layout.content.height - details_height,
+            layout.content.width,
+            details_height
+        };
+    }
+
+    const uint32_t image_height = layout.has_details
+        ? layout.content.height - details_height - section_gap
+        : layout.content.height;
+    layout.image_area = {layout.content.x, layout.content.y, layout.content.width, std::max(1u, image_height)};
+
+    const uint32_t left_width = layout.has_compare
+        ? std::max(1u, (layout.image_area.width > panel_gap ? (layout.image_area.width - panel_gap) / 2u : layout.image_area.width))
+        : layout.image_area.width;
+    const uint32_t right_width = layout.has_compare && layout.image_area.width > left_width + panel_gap
+        ? layout.image_area.width - left_width - panel_gap
+        : 0u;
+
+    layout.left_panel = {layout.image_area.x, layout.image_area.y, left_width, layout.image_area.height};
+    layout.left_label = {layout.left_panel.x, layout.left_panel.y, layout.left_panel.width, std::min(label_height, layout.left_panel.height)};
+    layout.left_image = {layout.left_panel.x,
+                         layout.left_panel.y + layout.left_label.height,
+                         layout.left_panel.width,
+                         layout.left_panel.height > layout.left_label.height ? layout.left_panel.height - layout.left_label.height : 1u};
+
+    if (layout.has_compare) {
+        layout.right_panel = {
+            layout.left_panel.x + layout.left_panel.width + panel_gap,
+            layout.image_area.y,
+            right_width,
+            layout.image_area.height
+        };
+        layout.right_label = {layout.right_panel.x, layout.right_panel.y, layout.right_panel.width, std::min(label_height, layout.right_panel.height)};
+        layout.right_image = {layout.right_panel.x,
+                              layout.right_panel.y + layout.right_label.height,
+                              layout.right_panel.width,
+                              layout.right_panel.height > layout.right_label.height ? layout.right_panel.height - layout.right_label.height : 1u};
+    }
+
+    if (layout.has_details) {
+        if (layout.has_compare) {
+            layout.left_info = {layout.details_area.x, layout.details_area.y, left_width, layout.details_area.height};
+            layout.right_info = {layout.right_panel.x, layout.details_area.y, right_width, layout.details_area.height};
+        } else {
+            layout.left_info = layout.details_area;
+        }
+    }
+
+    return layout;
+}
+
+void draw_sidebar(DisplayBuffer& canvas, const ViewerState& state, const ViewerLayout& layout) {
+    if (!layout.has_sidebar) {
+        return;
+    }
+
+    fill_rect(canvas, layout.sidebar.x, layout.sidebar.y, layout.sidebar.width, layout.sidebar.height, pack_rgba(18, 22, 28, 255));
+    fill_rect(canvas, layout.sidebar_header.x, layout.sidebar_header.y, layout.sidebar_header.width, layout.sidebar_header.height, pack_rgba(34, 44, 56, 255));
+    draw_text(canvas,
+              layout.sidebar_header.x + 10,
+              layout.sidebar_header.y + 8,
+              fit_label_text("FILES " + std::to_string(state.current_index + 1) + " OF " + std::to_string(state.items.size()),
+                             layout.sidebar_header.width),
+              pack_rgba(224, 236, 248, 255));
+
+    const size_t max_scroll = state.items.size() > layout.visible_rows
+        ? state.items.size() - layout.visible_rows
+        : 0u;
+    const size_t scroll = std::min<size_t>(state.list_scroll, max_scroll);
+    const uint32_t marker_size = 6;
+
+    for (size_t row = 0; row < layout.visible_rows; ++row) {
+        const size_t item_index = scroll + row;
+        if (item_index >= state.items.size()) {
+            break;
+        }
+
+        const uint32_t row_y = layout.sidebar_list.y + static_cast<uint32_t>(row) * layout.sidebar_row_height;
+        const Rect row_rect{layout.sidebar_list.x, row_y, layout.sidebar_list.width, layout.sidebar_row_height - 2u};
+        const bool selected = item_index == state.current_index;
+
+        fill_rect(canvas,
+                  row_rect.x,
+                  row_rect.y,
+                  row_rect.width,
+                  row_rect.height,
+                  selected ? pack_rgba(68, 88, 112, 255) : pack_rgba(24, 30, 38, 255));
+
+        if (state.items[item_index].has_source) {
+            fill_rect(canvas,
+                      row_rect.x + row_rect.width - 12,
+                      row_rect.y + (row_rect.height - marker_size) / 2u,
+                      marker_size,
+                      marker_size,
+                      selected ? pack_rgba(246, 212, 128, 255) : pack_rgba(74, 196, 212, 255));
+        }
+
+        draw_text(canvas,
+                  row_rect.x + 8,
+                  row_rect.y + 5,
+                  fit_label_text(normalize_label(state.items[item_index].display_name), row_rect.width - 20),
+                  selected ? pack_rgba(250, 248, 242, 255) : pack_rgba(204, 214, 224, 255));
+    }
+}
+
+void draw_panel(DisplayBuffer& canvas,
+                const ViewerPanel& panel,
+                const Rect& label_rect,
+                const Rect& image_rect,
+                uint32_t image_bg) {
+    if (label_rect.width > 0 && label_rect.height > 0) {
+        fill_rect(canvas, label_rect.x, label_rect.y, label_rect.width, label_rect.height, panel.label_bg);
+        draw_text(canvas,
+                  label_rect.x + 10,
+                  label_rect.y + 8,
+                  fit_label_text(normalize_label(panel.label), label_rect.width),
+                  panel.label_text);
+    }
+    draw_scaled_image(canvas, panel.image, image_rect, image_bg);
+}
+
+DisplayBuffer compose_window(const ViewerState& state, uint32_t window_width, uint32_t window_height, ViewerLayout& out_layout) {
+    out_layout = compute_layout(state, window_width, window_height);
 
     DisplayBuffer canvas;
     canvas.width = std::max(1u, window_width);
     canvas.height = std::max(1u, window_height);
-    canvas.pixels.assign(static_cast<size_t>(canvas.width) * canvas.height, pack_rgba(24, 24, 24, 255));
+    canvas.pixels.assign(static_cast<size_t>(canvas.width) * canvas.height, pack_rgba(22, 22, 24, 255));
 
-    const uint32_t target_info_height = std::max(info_block_height(decoded_panel),
-                                                 source_panel == nullptr ? 0u : info_block_height(*source_panel));
-    const uint32_t base_reserved = outer_padding * 2 + label_height + info_gap;
-    uint32_t info_height = 0;
-    if (canvas.height > base_reserved + min_image_height) {
-        info_height = std::min(target_info_height, canvas.height - base_reserved - min_image_height);
-    }
-    const uint32_t image_height = std::max(1u, canvas.height - base_reserved - info_height);
+    fill_rect(canvas, out_layout.header.x, out_layout.header.y, out_layout.header.width, out_layout.header.height, pack_rgba(38, 42, 48, 255));
+    draw_text(canvas,
+              out_layout.header.x + 10,
+              out_layout.header.y + 9,
+              fit_label_text(normalize_label(make_header_text(state)), out_layout.header.width),
+              pack_rgba(236, 240, 244, 255));
 
-    const uint32_t available_width = canvas.width > outer_padding * 2 ? canvas.width - outer_padding * 2 : 1u;
-    const uint32_t divider_width = panel_count == 2 && available_width > 2u
-        ? std::min(panel_gap, available_width - 2u)
-        : 0u;
-    const uint32_t total_panel_width = available_width > divider_width ? available_width - divider_width : 1u;
-    const uint32_t decoded_width = panel_count == 2 ? std::max(1u, total_panel_width / 2u) : std::max(1u, total_panel_width);
-    const uint32_t source_width = panel_count == 2 ? total_panel_width - decoded_width : 0u;
+    fill_rect(canvas, out_layout.footer.x, out_layout.footer.y, out_layout.footer.width, out_layout.footer.height, pack_rgba(34, 34, 38, 255));
+    draw_text(canvas,
+              out_layout.footer.x + 10,
+              out_layout.footer.y + 8,
+              fit_label_text(normalize_label(make_footer_text(state)), out_layout.footer.width),
+              pack_rgba(198, 208, 220, 255));
 
-    const uint32_t label_y = outer_padding;
-    const uint32_t image_y = label_y + label_height;
-    const uint32_t info_y = image_y + image_height + info_gap;
+    draw_sidebar(canvas, state, out_layout);
+
     const uint32_t image_bg = pack_rgba(10, 10, 10, 255);
-
-    auto draw_panel = [&](const ViewerPanel& panel, uint32_t x, uint32_t width) {
-        if (width == 0) {
-            return;
-        }
-        fill_rect(canvas, x, label_y, width, label_height, panel.label_bg);
-        draw_text(canvas,
-                  x + 10,
-                  label_y + label_text_y,
-                  fit_label_text(normalize_label(panel.label), width),
-                  panel.label_text);
-        draw_scaled_image(canvas, panel.image, x, image_y, width, image_height, image_bg);
-        if (info_height > 0) {
-            draw_info_block(canvas, panel, x, info_y, width, info_height);
-        }
-    };
-
-    draw_panel(decoded_panel, outer_padding, decoded_width);
-
-    if (source_panel != nullptr) {
-        const uint32_t divider_x = outer_padding + decoded_width;
+    draw_panel(canvas, state.document.decoded_panel, out_layout.left_label, out_layout.left_image, image_bg);
+    if (out_layout.has_compare && state.document.source_panel.has_value()) {
+        draw_panel(canvas, *state.document.source_panel, out_layout.right_label, out_layout.right_image, image_bg);
         fill_rect(canvas,
-                  divider_x,
-                  outer_padding,
-                  divider_width,
-                  canvas.height - outer_padding * 2,
-                  pack_rgba(56, 56, 56, 255));
-        draw_panel(*source_panel, divider_x + divider_width, source_width);
+                  out_layout.left_panel.x + out_layout.left_panel.width,
+                  out_layout.image_area.y,
+                  16u,
+                  out_layout.image_area.height,
+                  pack_rgba(54, 54, 58, 255));
+    }
+
+    if (out_layout.has_details) {
+        draw_info_block(canvas, state.document.decoded_panel, out_layout.left_info);
+        if (out_layout.has_compare && state.document.source_panel.has_value()) {
+            draw_info_block(canvas, *state.document.source_panel, out_layout.right_info);
+        }
     }
 
     return canvas;
 }
 
-std::string make_title(std::string_view wk_path, const wk::ImageInfo& info, std::string_view source_path) {
-    std::filesystem::path wk_file{std::string(wk_path)};
-    std::string title = "WK Viewer - ";
-    title += wk_file.filename().string();
-    title += " - ";
-    title += std::to_string(info.width);
-    title += 'x';
-    title += std::to_string(info.height);
-    title += " - ";
-    title += info.is_lossless ? "LOSSLESS" : "LOSSY";
-    if (!source_path.empty()) {
-        std::filesystem::path src_file{std::string(source_path)};
-        title += " - compare ";
-        title += src_file.filename().string();
+void clamp_scroll(ViewerState& state) {
+    if (!state.layout.has_sidebar || state.layout.visible_rows == 0) {
+        state.list_scroll = 0;
+        return;
     }
-    return title;
+    const size_t max_scroll = state.items.size() > state.layout.visible_rows
+        ? state.items.size() - state.layout.visible_rows
+        : 0u;
+    state.list_scroll = static_cast<uint32_t>(std::min<size_t>(state.list_scroll, max_scroll));
+}
+
+void ensure_selection_visible(ViewerState& state) {
+    if (!state.layout.has_sidebar || state.layout.visible_rows == 0) {
+        state.list_scroll = 0;
+        return;
+    }
+
+    if (state.current_index < state.list_scroll) {
+        state.list_scroll = static_cast<uint32_t>(state.current_index);
+    } else if (state.current_index >= state.list_scroll + state.layout.visible_rows) {
+        state.list_scroll = static_cast<uint32_t>(state.current_index - state.layout.visible_rows + 1);
+    }
+    clamp_scroll(state);
+}
+
+void load_current_document(ViewerState& state) {
+    state.document = load_document(state.items[state.current_index]);
+    state.dirty = true;
+}
+
+void set_current_index(ViewerState& state, size_t index) {
+    if (state.items.empty() || index >= state.items.size() || index == state.current_index) {
+        return;
+    }
+    state.current_index = index;
+    ensure_selection_visible(state);
+    load_current_document(state);
+}
+
+bool pressed_once(const uint8_t* keys,
+                  const std::array<uint8_t, static_cast<size_t>(MFB_KB_KEY_LAST) + 1>& previous,
+                  mfb_key key) {
+    if (keys == nullptr) {
+        return false;
+    }
+    const size_t index = static_cast<size_t>(key);
+    return index < previous.size() && keys[index] != 0 && previous[index] == 0;
+}
+
+bool mouse_pressed_once(const uint8_t* buttons,
+                        const std::array<uint8_t, 8>& previous,
+                        size_t index) {
+    if (buttons == nullptr || index >= previous.size()) {
+        return false;
+    }
+    return buttons[index] != 0 && previous[index] == 0;
+}
+
+void copy_key_buffer(std::array<uint8_t, static_cast<size_t>(MFB_KB_KEY_LAST) + 1>& destination,
+                     const uint8_t* source) {
+    if (source == nullptr) {
+        destination.fill(0);
+        return;
+    }
+    std::copy_n(source, destination.size(), destination.begin());
+}
+
+void copy_mouse_buttons(std::array<uint8_t, 8>& destination, const uint8_t* source) {
+    if (source == nullptr) {
+        destination.fill(0);
+        return;
+    }
+    std::copy_n(source, destination.size(), destination.begin());
+}
+
+bool handle_keyboard(ViewerState& state, const uint8_t* keys) {
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_ESCAPE)) {
+        return false;
+    }
+
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_RIGHT) ||
+        pressed_once(keys, state.previous_keys, MFB_KB_KEY_D)) {
+        set_current_index(state, (state.current_index + 1) % state.items.size());
+    }
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_LEFT) ||
+        pressed_once(keys, state.previous_keys, MFB_KB_KEY_A)) {
+        set_current_index(state, (state.current_index + state.items.size() - 1) % state.items.size());
+    }
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_DOWN)) {
+        set_current_index(state, std::min(state.current_index + 1, state.items.size() - 1));
+    }
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_UP)) {
+        set_current_index(state, state.current_index > 0 ? state.current_index - 1 : 0u);
+    }
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_HOME)) {
+        set_current_index(state, 0u);
+    }
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_END)) {
+        set_current_index(state, state.items.size() - 1);
+    }
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_I)) {
+        state.show_details = !state.show_details;
+        state.dirty = true;
+    }
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_L) && state.items.size() > 1) {
+        state.show_list = !state.show_list;
+        state.dirty = true;
+    }
+    if (pressed_once(keys, state.previous_keys, MFB_KB_KEY_TAB) && state.document.source_panel.has_value()) {
+        state.compare_requested = !state.compare_requested;
+        state.dirty = true;
+    }
+
+    return true;
+}
+
+void handle_mouse(ViewerState& state, mfb_window* window, const uint8_t* buttons) {
+    const int mouse_x = mfb_get_mouse_x(window);
+    const int mouse_y = mfb_get_mouse_y(window);
+    const float scroll_y = mfb_get_mouse_scroll_y(window);
+
+    if (state.layout.has_sidebar && state.layout.sidebar_list.contains(mouse_x, mouse_y)) {
+        if (std::abs(scroll_y) > 0.01f) {
+            const int delta = scroll_y > 0.0f ? -3 : 3;
+            const int next_scroll = std::max(0, static_cast<int>(state.list_scroll) + delta);
+            state.list_scroll = static_cast<uint32_t>(next_scroll);
+            clamp_scroll(state);
+            state.dirty = true;
+        }
+
+        if (mouse_pressed_once(buttons, state.previous_mouse_buttons, MFB_MOUSE_LEFT)) {
+            const int relative_y = mouse_y - static_cast<int>(state.layout.sidebar_list.y);
+            const size_t row = relative_y >= 0 ? static_cast<size_t>(relative_y / static_cast<int>(state.layout.sidebar_row_height)) : 0u;
+            const size_t index = static_cast<size_t>(state.list_scroll) + row;
+            if (index < state.items.size()) {
+                set_current_index(state, index);
+            }
+        }
+    }
 }
 
 void print_usage() {
     std::cerr
-        << "Usage: wkview <file.wk> [source.{jpg,jpeg,png,ppm}]\n"
-        << "       wkview --help\n";
+        << "Usage: wkview <file.wk|directory> [source.{jpg,jpeg,png,ppm}|source_directory]\n"
+        << "       wkview --help\n"
+        << "\nControls:\n"
+        << "  Left/Right or A/D   Previous or next WK file\n"
+        << "  Up/Down             Move selection in the file list\n"
+        << "  Home/End            Jump to first or last file\n"
+        << "  I                   Toggle details pane\n"
+        << "  L                   Toggle file list sidebar\n"
+        << "  Tab                 Toggle compare panel when source exists\n"
+        << "  Mouse click         Select a file from the sidebar\n"
+        << "  Mouse wheel         Scroll the file list\n"
+        << "  Esc                 Exit viewer\n";
 }
 
-}
+} // namespace
 
 int main(int argc, char* argv[]) {
     if (argc < 2 || std::string_view(argv[1]) == "-h" || std::string_view(argv[1]) == "--help") {
@@ -648,68 +1533,35 @@ int main(int argc, char* argv[]) {
         return argc < 2 ? 1 : 0;
     }
 
-    const std::string wk_path = argv[1];
-    const std::string source_path = argc >= 3 ? argv[2] : std::string();
+    const std::string input_path = argv[1];
+    const std::string source_hint = argc >= 3 ? argv[2] : std::string();
 
-    auto wk_bytes = read_file_bytes(wk_path);
-    if (!wk_bytes) {
-        std::cerr << "Error: " << wk_bytes.error().message << '\n';
+    auto playlist = build_playlist(input_path, source_hint);
+    if (!playlist) {
+        std::cerr << "Error: " << playlist.error().message << '\n';
         return 1;
     }
 
-    auto info = wk::get_info(*wk_bytes);
-    if (!info) {
-        std::cerr << "Error: failed to read WK info: " << info.error().message << '\n';
-        return 1;
-    }
+    ViewerState state;
+    state.items = std::move(playlist->first);
+    state.current_index = playlist->second;
+    state.show_list = state.items.size() > 1;
+    state.compare_requested = state.items[state.current_index].has_source;
+    load_current_document(state);
 
-    auto decoded = wk::decode(*wk_bytes);
-    if (!decoded) {
-        std::cerr << "Error: decode failed: " << decoded.error().message << '\n';
-        return 1;
-    }
+    const uint32_t preferred_content_height = std::max(state.document.decoded_panel.image.height,
+                                                       state.document.source_panel ? state.document.source_panel->image.height : 0u);
+    const uint32_t preferred_info_height = std::max(info_block_height(state.document.decoded_panel),
+                                                    state.document.source_panel ? info_block_height(*state.document.source_panel) : 0u);
+    const uint32_t preferred_sidebar = state.show_list ? 260u : 0u;
+    const uint32_t preferred_width = preferred_sidebar +
+        (state.compare_requested && state.document.source_panel ? state.document.decoded_panel.image.width + state.document.source_panel->image.width + 48u
+                                                               : state.document.decoded_panel.image.width + 24u);
+    const uint32_t preferred_height = preferred_content_height + preferred_info_height + 98u;
+    const unsigned initial_width = static_cast<unsigned>(std::clamp<uint32_t>(preferred_width, 960u, 1800u));
+    const unsigned initial_height = static_cast<unsigned>(std::clamp<uint32_t>(preferred_height, 640u, 1100u));
 
-    ViewerPanel decoded_panel;
-    decoded_panel.image = rasterize(*decoded);
-    decoded_panel.label = "WK: " + std::filesystem::path(wk_path).filename().string();
-    decoded_panel.info_lines = make_wk_info_lines(wk_path, file_size_or_zero(wk_path), *info);
-    decoded_panel.label_bg = pack_rgba(168, 112, 24, 255);
-    decoded_panel.label_text = pack_rgba(255, 245, 220, 255);
-    decoded_panel.info_bg = pack_rgba(44, 34, 18, 255);
-    decoded_panel.info_text = pack_rgba(255, 236, 196, 255);
-
-    ViewerPanel source_panel;
-    ViewerPanel* source_ptr = nullptr;
-    if (!source_path.empty()) {
-        auto source_image = load_image_file(source_path);
-        if (!source_image) {
-            std::cerr << "Error: failed to load source image: " << source_image.error().message << '\n';
-            return 1;
-        }
-        source_panel.image = rasterize(*source_image);
-        source_panel.label = "SOURCE: " + std::filesystem::path(source_path).filename().string();
-        source_panel.info_lines = make_source_info_lines(source_path, file_size_or_zero(source_path), *source_image);
-        source_panel.label_bg = pack_rgba(26, 100, 128, 255);
-        source_panel.label_text = pack_rgba(232, 248, 255, 255);
-        source_panel.info_bg = pack_rgba(18, 39, 54, 255);
-        source_panel.info_text = pack_rgba(220, 244, 255, 255);
-        source_ptr = &source_panel;
-    }
-
-    const uint32_t preferred_content_height = std::max(decoded_panel.image.height,
-                                                       source_ptr == nullptr ? 0u : source_ptr->image.height);
-    const uint32_t preferred_info_height = std::max(info_block_height(decoded_panel),
-                                                    source_ptr == nullptr ? 0u : info_block_height(*source_ptr));
-    const uint32_t preferred_width = source_ptr == nullptr
-        ? decoded_panel.image.width + 20u
-        : decoded_panel.image.width + source_ptr->image.width + 36u;
-    const uint32_t preferred_height = preferred_content_height + preferred_info_height + 54u;
-    const unsigned initial_width = static_cast<unsigned>(std::clamp<uint32_t>(preferred_width,
-                                                                              source_ptr == nullptr ? 720u : 1200u,
-                                                                              1800u));
-    const unsigned initial_height = static_cast<unsigned>(std::clamp<uint32_t>(preferred_height, 520u, 1000u));
-
-    mfb_window* window = mfb_open_ex(make_title(wk_path, *info, source_path).c_str(),
+    mfb_window* window = mfb_open_ex(build_window_title(state).c_str(),
                                      initial_width,
                                      initial_height,
                                      MFB_WF_RESIZABLE);
@@ -718,32 +1570,41 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    DisplayBuffer present = compose_window(decoded_panel, source_ptr, initial_width, initial_height);
-    mfb_set_viewport(window, 0, 0, present.width, present.height);
-    unsigned last_window_width = 0;
-    unsigned last_window_height = 0;
-
     while (true) {
         const unsigned window_width = std::max(1u, mfb_get_window_width(window));
         const unsigned window_height = std::max(1u, mfb_get_window_height(window));
-        if (window_width != last_window_width || window_height != last_window_height) {
-            present = compose_window(decoded_panel, source_ptr, window_width, window_height);
-            mfb_set_viewport(window, 0, 0, present.width, present.height);
-            last_window_width = window_width;
-            last_window_height = window_height;
+        if (window_width != state.last_window_width || window_height != state.last_window_height) {
+            state.last_window_width = window_width;
+            state.last_window_height = window_height;
+            state.dirty = true;
         }
 
-        const mfb_update_state state = mfb_update_ex(window,
-                                                     const_cast<uint32_t*>(present.pixels.data()),
-                                                     present.width,
-                                                     present.height);
-        if (state != MFB_STATE_OK) {
+        if (state.dirty) {
+            state.present = compose_window(state, state.last_window_width, state.last_window_height, state.layout);
+            ensure_selection_visible(state);
+            state.present = compose_window(state, state.last_window_width, state.last_window_height, state.layout);
+            mfb_set_viewport(window, 0, 0, state.present.width, state.present.height);
+            mfb_set_title(window, build_window_title(state).c_str());
+            state.dirty = false;
+        }
+
+        const mfb_update_state update_state = mfb_update_ex(window,
+                                                            const_cast<uint32_t*>(state.present.pixels.data()),
+                                                            state.present.width,
+                                                            state.present.height);
+        if (update_state != MFB_STATE_OK) {
             break;
         }
+
         const uint8_t* keys = mfb_get_key_buffer(window);
-        if (keys != nullptr && keys[MFB_KB_KEY_ESCAPE]) {
+        const uint8_t* mouse_buttons = mfb_get_mouse_button_buffer(window);
+        if (!handle_keyboard(state, keys)) {
             break;
         }
+        handle_mouse(state, window, mouse_buttons);
+
+        copy_key_buffer(state.previous_keys, keys);
+        copy_mouse_buttons(state.previous_mouse_buttons, mouse_buttons);
 
         if (!mfb_wait_sync(window)) {
             break;
