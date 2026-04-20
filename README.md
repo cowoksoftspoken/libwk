@@ -287,6 +287,12 @@ Main options:
 - `--yuv420`
 - `--import-exif FILE`
 
+Default tile policy:
+
+- lossy still-image encode uses `1024px` tiles by default
+- lossless keeps the legacy `512px` tile header by default
+- `--tile-size N` overrides both behaviors explicitly
+
 ### `wkdec`
 
 Usage:

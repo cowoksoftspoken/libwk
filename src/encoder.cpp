@@ -26,6 +26,22 @@ struct TileEncodeResult {
     float    quality_score;
 };
 
+static Result<uint8_t> resolve_tile_size_log2(const EncoderConfig& config) {
+    if (config.tile_size_log2 != 0) {
+        if (config.tile_size_log2 < 6 || config.tile_size_log2 > 10) {
+            return std::unexpected(Error{ErrorCode::InvalidParameter,
+                "tile_size_log2 must be 0 or between 6 and 10"});
+        }
+        return config.tile_size_log2;
+    }
+
+    if (config.lossless) {
+        return static_cast<uint8_t>(9);
+    }
+
+    return static_cast<uint8_t>(10);
+}
+
 
 static float compute_quality_score(const int16_t* original, const int16_t* reconstructed,
                                     uint32_t width, uint32_t height, int16_t max_val) {
@@ -889,6 +905,11 @@ Result<std::vector<uint8_t>> encode(const Image& image, const EncoderConfig& con
         return std::unexpected(Error{ErrorCode::InvalidParameter, "zero dimensions"});
     }
 
+    auto tile_size_log2 = resolve_tile_size_log2(config);
+    if (!tile_size_log2) {
+        return std::unexpected(tile_size_log2.error());
+    }
+
     const bool source_has_alpha = image.has_alpha();
 
     FrameHeader fhdr;
@@ -898,7 +919,7 @@ Result<std::vector<uint8_t>> encode(const Image& image, const EncoderConfig& con
     fhdr.cicp_primaries = config.cicp.primaries;
     fhdr.cicp_transfer = config.cicp.transfer;
     fhdr.cicp_matrix = config.cicp.matrix;
-    fhdr.tile_size_log2 = config.tile_size_log2;
+    fhdr.tile_size_log2 = *tile_size_log2;
 
     fhdr.flags = 0;
     if (config.lossless) fhdr.flags |= wk::FHDR_FLAG_LOSSLESS;
@@ -1084,7 +1105,7 @@ void wk_encoder_config_init(wk_encoder_config_t* config) {
     config->cicp_primaries = 1;
     config->cicp_transfer = 1;
     config->cicp_matrix = 1;
-    config->tile_size_log2 = 9;
+    config->tile_size_log2 = 0;
     config->threads = 0;
     config->target_ssimulacra2 = 0.0f;
     config->chroma_subsampling = 0;

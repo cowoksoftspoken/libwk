@@ -124,14 +124,17 @@ void print_usage() {
         << "Options:\n"
         << "  --quality N             Lossy quality 0..100 (default: 75)\n"
         << "  --lossless              Encode losslessly\n"
-        << "  --tile-size N           Tile size in pixels (64..1024, power of two)\n"
+        << "  --tile-size N           Explicit tile size in pixels (64..1024, power of two)\n"
         << "  --threads N             Thread count (0 = auto)\n"
         << "  --target-ssimulacra2 N  Target SSIMULACRA2 score\n"
         << "  --yuv444                Use 4:4:4 chroma (default)\n"
         << "  --yuv420                Use 4:2:0 chroma\n"
         << "  --import-exif FILE      Import EXIF from JPEG/TIFF donor file\n"
         << "  --version               Print version\n"
-        << "  -h, --help              Show this help\n";
+        << "  -h, --help              Show this help\n\n"
+        << "Defaults:\n"
+        << "  Lossy encode uses 1024px tiles unless --tile-size is set\n"
+        << "  Lossless encode keeps the legacy 512px tile header unless overridden\n";
 }
 
 }

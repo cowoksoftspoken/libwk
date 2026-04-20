@@ -87,7 +87,7 @@ struct EncoderConfig {
     BitDepth     bit_depth           = BitDepth::Bits8;
     Subsampling  subsampling         = Subsampling::YUV444;
     CICP         cicp                = {};
-    uint8_t      tile_size_log2      = 9;
+    uint8_t      tile_size_log2      = 0;
     uint32_t     threads             = 0;
     float        target_ssimulacra2  = 0.0f;
 };

@@ -196,6 +196,46 @@ TEST(RoundtripTest, HigherLossyQualityTradesSizeForQuality) {
         << "Higher quality should not materially regress chroma PSNR";
 }
 
+TEST(RoundtripTest, DefaultLossyTilePolicyUses1024ButLosslessStays512) {
+    Image image = make_rgb_gradient(640, 384);
+
+    EncoderConfig lossy_auto;
+    lossy_auto.quality = 85.0f;
+    lossy_auto.subsampling = Subsampling::YUV444;
+
+    auto encoded_lossy = encode(image, lossy_auto);
+    ASSERT_TRUE(encoded_lossy.has_value()) << encoded_lossy.error().message;
+
+    auto lossy_info = get_info(*encoded_lossy);
+    ASSERT_TRUE(lossy_info.has_value()) << lossy_info.error().message;
+    EXPECT_EQ(lossy_info->tile_size, 1024u);
+
+    auto lossy_file = parse_container(*encoded_lossy);
+    ASSERT_TRUE(lossy_file.has_value()) << lossy_file.error().message;
+    EXPECT_EQ(lossy_file->header.tile_size_log2, 10u);
+
+    EncoderConfig lossy_512 = lossy_auto;
+    lossy_512.tile_size_log2 = 9;
+
+    auto encoded_lossy_512 = encode(image, lossy_512);
+    ASSERT_TRUE(encoded_lossy_512.has_value()) << encoded_lossy_512.error().message;
+    EXPECT_LT(encoded_lossy->size(), encoded_lossy_512->size());
+
+    EncoderConfig lossless;
+    lossless.lossless = true;
+
+    auto encoded_lossless = encode(image, lossless);
+    ASSERT_TRUE(encoded_lossless.has_value()) << encoded_lossless.error().message;
+
+    auto lossless_info = get_info(*encoded_lossless);
+    ASSERT_TRUE(lossless_info.has_value()) << lossless_info.error().message;
+    EXPECT_EQ(lossless_info->tile_size, 512u);
+
+    auto lossless_file = parse_container(*encoded_lossless);
+    ASSERT_TRUE(lossless_file.has_value()) << lossless_file.error().message;
+    EXPECT_EQ(lossless_file->header.tile_size_log2, 9u);
+}
+
 TEST(RoundtripTest, HigherLossyQualityImprovesDarkChromaStability) {
     Image image = make_dark_color_scene(192, 192);
 
