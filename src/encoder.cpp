@@ -3,6 +3,7 @@
 #include "container.h"
 #include "rans.h"
 #include "dct.h"
+#include "mode_stream.h"
 #include "quantize.h"
 #include "predict.h"
 #include "colorspace.h"
@@ -16,8 +17,6 @@
 #include <algorithm>
 
 namespace wk {
-
-constexpr uint32_t kLossyTileLayoutTag = 0x314d4843u;
 
 struct TileEncodeResult {
     uint16_t tile_x;
@@ -814,14 +813,25 @@ static Result<TileEncodeResult> encode_lossy_tile(
     tile_writer.write_u16(static_cast<uint16_t>(chroma_blocks_x));
     tile_writer.write_u16(static_cast<uint16_t>(chroma_blocks_y));
 
-    tile_writer.write_u32(kLossyTileLayoutTag);
+    tile_writer.write_u32(kLossyTileLayoutTagV2);
 
-    for (const auto& bd : y_blocks) {
-        tile_writer.write_u8(static_cast<uint8_t>(bd.mode));
+    auto write_block_modes = [&](const std::vector<BlockData>& blocks) -> Result<void> {
+        std::vector<PredMode> modes;
+        modes.reserve(blocks.size());
+        for (const auto& block : blocks) {
+            modes.push_back(block.mode);
+        }
+        return write_packed_prediction_modes(tile_writer, modes);
+    };
+
+    auto y_mode_result = write_block_modes(y_blocks);
+    if (!y_mode_result) {
+        return std::unexpected(y_mode_result.error());
     }
 
-    for (const auto& bd : cb_blocks) {
-        tile_writer.write_u8(static_cast<uint8_t>(bd.mode));
+    auto chroma_mode_result = write_block_modes(cb_blocks);
+    if (!chroma_mode_result) {
+        return std::unexpected(chroma_mode_result.error());
     }
 
     auto rans_encode_blocks = [&](const std::vector<BlockData>& blocks) {
@@ -881,8 +891,9 @@ static Result<TileEncodeResult> encode_lossy_tile(
 
     if (has_alpha) {
         for (int i = 0; i < 64; ++i) tile_writer.write_u16(quant_a.step(i));
-        for (const auto& bd : a_blocks) {
-            tile_writer.write_u8(static_cast<uint8_t>(bd.mode));
+        auto alpha_mode_result = write_block_modes(a_blocks);
+        if (!alpha_mode_result) {
+            return std::unexpected(alpha_mode_result.error());
         }
         rans_encode_blocks(a_blocks);
     }

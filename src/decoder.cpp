@@ -3,6 +3,7 @@
 #include "container.h"
 #include "rans.h"
 #include "dct.h"
+#include "mode_stream.h"
 #include "predict.h"
 #include "colorspace.h"
 #include "lossless.h"
@@ -15,8 +16,6 @@
 namespace wk {
 
 namespace {
-
-constexpr uint32_t kLossyTileLayoutTag = 0x314d4843u;
 
 struct TileGeometry {
     uint32_t x0 = 0;
@@ -189,7 +188,9 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
     if (!layout_tag) {
         return std::unexpected(Error{ErrorCode::TruncatedInput, "missing lossy tile layout tag"});
     }
-    if (*layout_tag != kLossyTileLayoutTag) {
+    const bool packed_mode_streams = *layout_tag == kLossyTileLayoutTagV2;
+    const bool raw_mode_streams = *layout_tag == kLossyTileLayoutTagV1;
+    if (!packed_mode_streams && !raw_mode_streams) {
         return std::unexpected(Error{ErrorCode::DecodeFailed, "unsupported lossy tile layout"});
     }
 
@@ -201,25 +202,34 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
     }
 
     const size_t num_y_blocks = static_cast<size_t>(blocks_x) * blocks_y;
-    std::vector<PredMode> y_modes(num_y_blocks);
-    for (size_t i = 0; i < num_y_blocks; ++i) {
-        auto mode = reader.read_u8();
-        if (!mode) return std::unexpected(mode.error());
-        if (*mode >= static_cast<uint8_t>(PredMode::NUM_MODES)) {
-            return std::unexpected(Error{ErrorCode::PredictionError, "invalid prediction mode"});
+    const size_t num_c_blocks = static_cast<size_t>(chroma_blocks_x) * chroma_blocks_y;
+    auto read_raw_modes = [&](size_t mode_count, std::string_view label) -> Result<std::vector<PredMode>> {
+        std::vector<PredMode> modes(mode_count);
+        for (size_t i = 0; i < mode_count; ++i) {
+            auto mode = reader.read_u8();
+            if (!mode) {
+                return std::unexpected(mode.error());
+            }
+            if (*mode >= static_cast<uint8_t>(PredMode::NUM_MODES)) {
+                return std::unexpected(
+                    Error{ErrorCode::PredictionError,
+                          std::string("invalid ") + std::string(label) + " prediction mode"});
+            }
+            modes[i] = static_cast<PredMode>(*mode);
         }
-        y_modes[i] = static_cast<PredMode>(*mode);
+        return modes;
+    };
+
+    auto y_modes = packed_mode_streams ? read_packed_prediction_modes(reader, num_y_blocks, "luma")
+                                       : read_raw_modes(num_y_blocks, "luma");
+    if (!y_modes) {
+        return std::unexpected(y_modes.error());
     }
 
-    const size_t num_c_blocks = static_cast<size_t>(chroma_blocks_x) * chroma_blocks_y;
-    std::vector<PredMode> chroma_modes(num_c_blocks);
-    for (size_t i = 0; i < num_c_blocks; ++i) {
-        auto mode = reader.read_u8();
-        if (!mode) return std::unexpected(mode.error());
-        if (*mode >= static_cast<uint8_t>(PredMode::NUM_MODES)) {
-            return std::unexpected(Error{ErrorCode::PredictionError, "invalid chroma prediction mode"});
-        }
-        chroma_modes[i] = static_cast<PredMode>(*mode);
+    auto chroma_modes = packed_mode_streams ? read_packed_prediction_modes(reader, num_c_blocks, "chroma")
+                                            : read_raw_modes(num_c_blocks, "chroma");
+    if (!chroma_modes) {
+        return std::unexpected(chroma_modes.error());
     }
 
     auto decode_plane_coeffs = [&](size_t num_blocks) -> Result<std::vector<DctBlockI16>> {
@@ -327,7 +337,7 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
             }
 
             int16_t prediction[64];
-            predict_8x8(y_modes[block_index], has_above ? above : nullptr,
+            predict_8x8((*y_modes)[block_index], has_above ? above : nullptr,
                         has_left ? left : nullptr, above_left, prediction, max_val);
 
             for (int r = 0; r < 8; ++r) {
@@ -409,8 +419,8 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         }
     };
 
-    reconstruct_chroma(*cb_coeffs, chroma_modes, result.cb_plane);
-    reconstruct_chroma(*cr_coeffs, chroma_modes, result.cr_plane);
+    reconstruct_chroma(*cb_coeffs, *chroma_modes, result.cb_plane);
+    reconstruct_chroma(*cr_coeffs, *chroma_modes, result.cr_plane);
 
     if (has_alpha != tile_has_alpha) {
         return std::unexpected(Error{ErrorCode::DecodeFailed,
@@ -425,14 +435,10 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
             a_steps[i] = *value;
         }
 
-        std::vector<PredMode> a_modes(num_y_blocks);
-        for (size_t i = 0; i < num_y_blocks; ++i) {
-            auto mode = reader.read_u8();
-            if (!mode) return std::unexpected(mode.error());
-            if (*mode >= static_cast<uint8_t>(PredMode::NUM_MODES)) {
-                return std::unexpected(Error{ErrorCode::PredictionError, "invalid alpha prediction mode"});
-            }
-            a_modes[i] = static_cast<PredMode>(*mode);
+        auto a_modes = packed_mode_streams ? read_packed_prediction_modes(reader, num_y_blocks, "alpha")
+                                           : read_raw_modes(num_y_blocks, "alpha");
+        if (!a_modes) {
+            return std::unexpected(a_modes.error());
         }
 
         auto a_coeffs = decode_plane_coeffs(num_y_blocks);
@@ -477,7 +483,7 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
                 }
 
                 int16_t prediction[64];
-                predict_8x8(a_modes[block_index], has_above ? above : nullptr,
+                predict_8x8((*a_modes)[block_index], has_above ? above : nullptr,
                             has_left ? left : nullptr, above_left, prediction, max_val);
 
                 for (int r = 0; r < 8; ++r) {

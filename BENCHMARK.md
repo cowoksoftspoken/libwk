@@ -36,6 +36,42 @@ You can also emit JSON for automation:
 .\build\wkmetric.exe --json photos\people\ember-7f3a.jpg photos\people\ember-7f3a_clean.wk
 ```
 
+Open the same result in the viewer for a side-by-side check:
+
+```powershell
+.\build\wkview.exe .\benchmark\people\encoded\ember-7f3a_q85_yuv444.wk .\photos\people\ember-7f3a.jpg
+```
+
+## Recommended Manual Pass
+
+If you want to benchmark one file yourself and keep the output tree tidy for later inspection, this is the practical command set to use today:
+
+```powershell
+New-Item -ItemType Directory -Force -Path .\benchmark\people\encoded, .\benchmark\people\decoded, .\benchmark\people\summary | Out-Null
+.\build\wkenc.exe --quality 75 --yuv444 .\photos\people\ember-7f3a.jpg .\benchmark\people\encoded\ember-7f3a_q75_yuv444.wk
+.\build\wkdec.exe .\benchmark\people\encoded\ember-7f3a_q75_yuv444.wk .\benchmark\people\decoded\ember-7f3a_q75_yuv444.png
+.\build\wkmetric.exe --json .\photos\people\ember-7f3a.jpg .\benchmark\people\encoded\ember-7f3a_q75_yuv444.wk | Set-Content -Encoding utf8 .\benchmark\people\summary\ember-7f3a_q75_yuv444.json
+.\build\wkview.exe .\benchmark\people\encoded\ember-7f3a_q75_yuv444.wk .\photos\people\ember-7f3a.jpg
+```
+
+Do the same for the higher-quality pass:
+
+```powershell
+.\build\wkenc.exe --quality 85 --yuv444 .\photos\people\ember-7f3a.jpg .\benchmark\people\encoded\ember-7f3a_q85_yuv444.wk
+.\build\wkdec.exe .\benchmark\people\encoded\ember-7f3a_q85_yuv444.wk .\benchmark\people\decoded\ember-7f3a_q85_yuv444.png
+.\build\wkmetric.exe --json .\photos\people\ember-7f3a.jpg .\benchmark\people\encoded\ember-7f3a_q85_yuv444.wk | Set-Content -Encoding utf8 .\benchmark\people\summary\ember-7f3a_q85_yuv444.json
+.\build\wkview.exe .\benchmark\people\encoded\ember-7f3a_q85_yuv444.wk .\photos\people\ember-7f3a.jpg
+```
+
+For a scenery sample, swap the paths:
+
+```powershell
+.\build\wkenc.exe --quality 85 --yuv444 .\photos\scenery\noctis-8c1f.jpg .\benchmark\scenery\encoded\noctis-8c1f_q85_yuv444.wk
+.\build\wkdec.exe .\benchmark\scenery\encoded\noctis-8c1f_q85_yuv444.wk .\benchmark\scenery\decoded\noctis-8c1f_q85_yuv444.png
+.\build\wkmetric.exe --json .\photos\scenery\noctis-8c1f.jpg .\benchmark\scenery\encoded\noctis-8c1f_q85_yuv444.wk | Set-Content -Encoding utf8 .\benchmark\scenery\summary\noctis-8c1f_q85_yuv444.json
+.\build\wkview.exe .\benchmark\scenery\encoded\noctis-8c1f_q85_yuv444.wk .\photos\scenery\noctis-8c1f.jpg
+```
+
 ## Corpus Workflow
 
 Run the recursive photo corpus in `photos/` with the current default lossy profile:
@@ -62,8 +98,8 @@ Run a JPEG-signature-only pass when you want to exclude disguised inputs:
 .\utils\benchmark_corpus.ps1 -Quality 75 -Subsampling 444 -FormatFilter jpeg
 ```
 
-The script walks `photos/people/` and `photos/scenery/` recursively, writes encoded outputs under `benchmark/`, and produces both row-level summaries and rollups.
-Benchmark filenames flatten the recursive path into the stem, for example `benchmark/people_mira-5b8d_q85_yuv444.wk`.
+The script walks `photos/people/` and `photos/scenery/` recursively and produces row-level summaries plus rollups.
+In the current tree, the checked-in benchmark artifacts are organized by corpus under `benchmark/people/` and `benchmark/scenery/`, with shared top-level rollups under `benchmark/rollup/`.
 
 The row JSON files include:
 
@@ -91,14 +127,18 @@ The rollup JSON files aggregate the same benchmark by:
 
 The current checked-in summaries are:
 
-- `benchmark/summary_q75_yuv444.json`
-- `benchmark/summary_q85_yuv444.json`
-- `benchmark/rollup_q75_yuv444.json`
-- `benchmark/rollup_q85_yuv444.json`
-- `benchmark/summary_q75_yuv444_srcjpeg.json`
-- `benchmark/summary_q85_yuv444_srcjpeg.json`
-- `benchmark/rollup_q75_yuv444_srcjpeg.json`
-- `benchmark/rollup_q85_yuv444_srcjpeg.json`
+- `benchmark/people/summary/summary_q75_yuv444.json`
+- `benchmark/people/summary/summary_q85_yuv444.json`
+- `benchmark/scenery/summary/summary_q75_yuv444.json`
+- `benchmark/scenery/summary/summary_q85_yuv444.json`
+- `benchmark/people/rollup/rollup_q75_yuv444.json`
+- `benchmark/people/rollup/rollup_q85_yuv444.json`
+- `benchmark/scenery/rollup/rollup_q75_yuv444.json`
+- `benchmark/scenery/rollup/rollup_q85_yuv444.json`
+- `benchmark/rollup/rollup_q75_yuv444.json`
+- `benchmark/rollup/rollup_q85_yuv444.json`
+- `benchmark/rollup/rollup_q75_yuv444_srcjpeg.json`
+- `benchmark/rollup/rollup_q85_yuv444_srcjpeg.json`
 
 Across the current six-image recursive corpus, the mixed-extension averages are:
 
@@ -131,8 +171,8 @@ The JPEG-signature-only subset keeps the comparison cleaner when you want to rem
 Example from the current tree:
 
 - `photos/people/mira-5b8d.jpg`: `6,072` bytes
-- `benchmark/people_mira-5b8d_q75_yuv444.wk`: `14,865` bytes, `PSNR 36.8016`, `SSIM 0.972798`
-- `benchmark/people_mira-5b8d_q85_yuv444.wk`: `19,160` bytes, `PSNR 39.5566`, `SSIM 0.985293`
+- `benchmark/people/encoded/mira-5b8d_q75_yuv444.wk`: `14,865` bytes, `PSNR 36.8016`, `SSIM 0.972798`
+- `benchmark/people/encoded/mira-5b8d_q85_yuv444.wk`: `19,160` bytes, `PSNR 39.5566`, `SSIM 0.985293`
 
 ## Smoke Workflow
 
@@ -179,7 +219,7 @@ Use the metrics this way:
 If you want to inspect a benchmark result visually, use the full benchmark filename:
 
 ```powershell
-.\build\wkview.exe .\benchmark\people_mira-5b8d_q85_yuv444.wk .\photos\people\mira-5b8d.jpg
+.\build\wkview.exe .\benchmark\people\encoded\mira-5b8d_q85_yuv444.wk .\photos\people\mira-5b8d.jpg
 ```
 
 If you accidentally omit the profile suffix, the current viewer tries to suggest nearby filenames instead of only failing with a generic open error.

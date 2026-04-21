@@ -92,9 +92,13 @@ FILE HEADER (magic + version)
 
 1. **Quantization tables**: 64 x uint16 (luma) + 64 x uint16 (chroma)
 2. **Block dimensions**: blocks_x (uint16), blocks_y (uint16), chroma_blocks_x (uint16), chroma_blocks_y (uint16)
-3. **Prediction modes**: one uint8 per luma block (0..12)
-4. **rANS-coded coefficients**: per-coefficient-position encoding with frequency tables for Y, Cb, and Cr
-5. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, one uint8 prediction mode per luma block, and one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
+3. **Layout tag**: uint32 identifying the lossy tile syntax variant
+4. **Prediction mode streams**:
+   - Layout tag `0x324D4843` stores a `uint16` packed-byte length followed by 4-bit prediction modes packed two per byte.
+   - Layout tag `0x314D4843` is the legacy layout and stores one `uint8` prediction mode per block.
+   - One stream is stored for luma blocks and one stream is stored for chroma blocks.
+5. **rANS-coded coefficients**: per-coefficient-position encoding with frequency tables for Y, Cb, and Cr
+6. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, then an alpha prediction mode stream using the same layout-tag-defined signaling, then one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
 
 ### 3.3 Lossless Tile Payload
 

@@ -7,6 +7,7 @@
 #include "../src/container.h"
 #include "../src/image_io.h"
 #include "../src/metrics.h"
+#include "../src/mode_stream.h"
 #include <cmath>
 #include <filesystem>
 
@@ -360,6 +361,40 @@ TEST(RoundtripTest, BadEntropyStreamRejected) {
     auto decoded = decode(*broken_file);
     EXPECT_FALSE(decoded.has_value());
     EXPECT_EQ(decoded.error().code, ErrorCode::RansError);
+}
+
+TEST(RoundtripTest, PackedModeStreamCorruptionRejected) {
+    Image image = make_rgb_gradient(24, 24);
+
+    EncoderConfig config;
+    config.quality = 85.0f;
+    config.subsampling = Subsampling::YUV444;
+
+    auto encoded = encode(image, config);
+    ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+
+    auto file = parse_container(*encoded);
+    ASSERT_TRUE(file.has_value()) << file.error().message;
+    ASSERT_EQ(file->tile_chunks.size(), 1u);
+
+    auto& payload = file->tile_chunks.front().payload;
+    constexpr size_t kTileHeaderBytes = 9;
+    constexpr size_t kQuantTableBytes = 64u * sizeof(uint16_t) * 2u;
+    constexpr size_t kBlockDimensionBytes = 4u * sizeof(uint16_t);
+    constexpr size_t kLayoutTagBytes = sizeof(uint32_t);
+    const size_t mode_size_offset =
+        kTileHeaderBytes + kQuantTableBytes + kBlockDimensionBytes + kLayoutTagBytes;
+
+    ASSERT_GT(payload.size(), mode_size_offset + sizeof(uint16_t) - 1);
+    payload[mode_size_offset + 0] = 0;
+    payload[mode_size_offset + 1] = 0;
+
+    auto broken = write_container(*file);
+    ASSERT_TRUE(broken.has_value()) << broken.error().message;
+
+    auto decoded = decode(*broken);
+    EXPECT_FALSE(decoded.has_value());
+    EXPECT_EQ(decoded.error().code, ErrorCode::PredictionError);
 }
 
 TEST(RoundtripTest, PhotoJpegPipelines) {
