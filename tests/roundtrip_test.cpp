@@ -5,6 +5,7 @@
 #include <wk/wk.hpp>
 #include "../src/common.h"
 #include "../src/container.h"
+#include "../src/coeff_span_stream.h"
 #include "../src/image_io.h"
 #include "../src/metrics.h"
 #include "../src/mode_stream.h"
@@ -395,6 +396,85 @@ TEST(RoundtripTest, PackedModeStreamCorruptionRejected) {
     auto decoded = decode(*broken);
     EXPECT_FALSE(decoded.has_value());
     EXPECT_EQ(decoded.error().code, ErrorCode::PredictionError);
+}
+
+TEST(RoundtripTest, PackedCoefficientSpanCorruptionRejected) {
+    Image image = make_rgb_gradient(24, 24);
+
+    EncoderConfig config;
+    config.quality = 85.0f;
+    config.subsampling = Subsampling::YUV444;
+
+    auto encoded = encode(image, config);
+    ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+
+    auto file = parse_container(*encoded);
+    ASSERT_TRUE(file.has_value()) << file.error().message;
+    ASSERT_EQ(file->tile_chunks.size(), 1u);
+
+    auto& payload = file->tile_chunks.front().payload;
+    constexpr size_t kTileHeaderBytes = 9;
+    constexpr size_t kQuantTableBytes = 64u * sizeof(uint16_t) * 2u;
+    constexpr size_t kBlockDimensionBytes = 4u * sizeof(uint16_t);
+    constexpr size_t kLayoutTagBytes = sizeof(uint32_t);
+    const size_t y_blocks = 9;
+    const size_t chroma_blocks = 9;
+    const size_t mode_bytes_offset =
+        kTileHeaderBytes + kQuantTableBytes + kBlockDimensionBytes + kLayoutTagBytes;
+    const size_t y_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(y_blocks);
+    const size_t chroma_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(chroma_blocks);
+    const size_t span_size_offset = mode_bytes_offset + y_mode_stream_bytes + chroma_mode_stream_bytes;
+
+    ASSERT_GT(payload.size(), span_size_offset + sizeof(uint16_t) - 1);
+    payload[span_size_offset + 0] = 0;
+    payload[span_size_offset + 1] = 0;
+
+    auto broken = write_container(*file);
+    ASSERT_TRUE(broken.has_value()) << broken.error().message;
+
+    auto decoded = decode(*broken);
+    EXPECT_FALSE(decoded.has_value());
+    EXPECT_EQ(decoded.error().code, ErrorCode::DecodeFailed);
+}
+
+TEST(RoundtripTest, CoefficientTableCorruptionRejected) {
+    Image image = make_rgb_gradient(24, 24);
+
+    EncoderConfig config;
+    config.quality = 85.0f;
+    config.subsampling = Subsampling::YUV444;
+
+    auto encoded = encode(image, config);
+    ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+
+    auto file = parse_container(*encoded);
+    ASSERT_TRUE(file.has_value()) << file.error().message;
+    ASSERT_EQ(file->tile_chunks.size(), 1u);
+
+    auto& payload = file->tile_chunks.front().payload;
+    constexpr size_t kTileHeaderBytes = 9;
+    constexpr size_t kQuantTableBytes = 64u * sizeof(uint16_t) * 2u;
+    constexpr size_t kBlockDimensionBytes = 4u * sizeof(uint16_t);
+    constexpr size_t kLayoutTagBytes = sizeof(uint32_t);
+    const size_t y_blocks = 9;
+    const size_t chroma_blocks = 9;
+    const size_t y_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(y_blocks);
+    const size_t chroma_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(chroma_blocks);
+    const size_t y_span_stream_bytes = sizeof(uint16_t) + packed_coefficient_span_bytes(y_blocks);
+    const size_t chroma_span_stream_bytes = sizeof(uint16_t) + packed_coefficient_span_bytes(chroma_blocks);
+    const size_t coeff_table_offset = kTileHeaderBytes + kQuantTableBytes + kBlockDimensionBytes +
+                                      kLayoutTagBytes + y_mode_stream_bytes + chroma_mode_stream_bytes +
+                                      y_span_stream_bytes + chroma_span_stream_bytes;
+
+    ASSERT_GT(payload.size(), coeff_table_offset);
+    payload[coeff_table_offset] = 0xFF;
+
+    auto broken = write_container(*file);
+    ASSERT_TRUE(broken.has_value()) << broken.error().message;
+
+    auto decoded = decode(*broken);
+    EXPECT_FALSE(decoded.has_value());
+    EXPECT_EQ(decoded.error().code, ErrorCode::RansError);
 }
 
 TEST(RoundtripTest, PhotoJpegPipelines) {

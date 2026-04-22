@@ -95,10 +95,23 @@ FILE HEADER (magic + version)
 3. **Layout tag**: uint32 identifying the lossy tile syntax variant
 4. **Prediction mode streams**:
    - Layout tag `0x324D4843` stores a `uint16` packed-byte length followed by 4-bit prediction modes packed two per byte.
+   - Layout tag `0x334D4843` keeps the packed prediction mode streams and additionally stores packed coefficient-span streams.
+   - Layout tag `0x344D4843` keeps the packed prediction modes and coefficient spans, and switches coefficient-table metadata to adaptive serialization.
    - Layout tag `0x314D4843` is the legacy layout and stores one `uint8` prediction mode per block.
    - One stream is stored for luma blocks and one stream is stored for chroma blocks.
-5. **rANS-coded coefficients**: per-coefficient-position encoding with frequency tables for Y, Cb, and Cr
-6. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, then an alpha prediction mode stream using the same layout-tag-defined signaling, then one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
+5. **Coefficient span streams**:
+   - Layout tag `0x334D4843` stores one packed span stream for luma blocks and one packed span stream for chroma blocks.
+   - Layout tag `0x344D4843` keeps the same span signaling.
+   - Each span is a 7-bit value in the range `0..64` and represents how many zigzag-ordered coefficients are present for the block.
+   - Coefficients at positions `>= span` are implicitly zero and are not entropy-coded.
+6. **Coefficient-table metadata**:
+   - Layout tags `0x314D4843` to `0x334D4843` store dense symbol ranges: `first_symbol`, `last_symbol`, then one `uint16` frequency per symbol in that range.
+   - Layout tag `0x344D4843` stores one-byte table encoding tags per coefficient context:
+     - `0`: single-symbol table, followed by one `uint16` symbol id
+     - `1`: dense range, followed by `first_symbol`, `last_symbol`, and dense `uint16` frequencies
+     - `2`: sparse pairs, followed by `pair_count` and repeated `(symbol, frequency)` pairs
+7. **rANS-coded coefficients**: per-coefficient-position encoding with frequency tables for Y, Cb, and Cr
+8. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, then an alpha prediction mode stream using the same layout-tag-defined signaling, then an alpha coefficient-span stream when the layout tag is `0x334D4843` or `0x344D4843`, then one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
 
 ### 3.3 Lossless Tile Payload
 

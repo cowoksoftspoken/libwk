@@ -1,5 +1,7 @@
 
 #include "common.h"
+#include "coeff_span_stream.h"
+#include "coeff_table_stream.h"
 #include "container.h"
 #include "rans.h"
 #include "dct.h"
@@ -188,8 +190,13 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
     if (!layout_tag) {
         return std::unexpected(Error{ErrorCode::TruncatedInput, "missing lossy tile layout tag"});
     }
-    const bool packed_mode_streams = *layout_tag == kLossyTileLayoutTagV2;
+    const bool packed_mode_streams = *layout_tag == kLossyTileLayoutTagV2 ||
+                                     *layout_tag == kLossyTileLayoutTagV3 ||
+                                     *layout_tag == kLossyTileLayoutTagV4;
     const bool raw_mode_streams = *layout_tag == kLossyTileLayoutTagV1;
+    const bool packed_coefficient_spans = *layout_tag == kLossyTileLayoutTagV3 ||
+                                          *layout_tag == kLossyTileLayoutTagV4;
+    const bool adaptive_coefficient_tables = *layout_tag == kLossyTileLayoutTagV4;
     if (!packed_mode_streams && !raw_mode_streams) {
         return std::unexpected(Error{ErrorCode::DecodeFailed, "unsupported lossy tile layout"});
     }
@@ -232,38 +239,77 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         return std::unexpected(chroma_modes.error());
     }
 
-    auto decode_plane_coeffs = [&](size_t num_blocks) -> Result<std::vector<DctBlockI16>> {
+    std::vector<uint8_t> y_spans(num_y_blocks, 64);
+    if (packed_coefficient_spans) {
+        auto spans = read_packed_coefficient_spans(reader, num_y_blocks, "luma");
+        if (!spans) {
+            return std::unexpected(spans.error());
+        }
+        y_spans = std::move(*spans);
+    }
+
+    std::vector<uint8_t> chroma_spans(num_c_blocks, 64);
+    if (packed_coefficient_spans) {
+        auto spans = read_packed_coefficient_spans(reader, num_c_blocks, "chroma");
+        if (!spans) {
+            return std::unexpected(spans.error());
+        }
+        chroma_spans = std::move(*spans);
+    }
+
+    auto decode_plane_coeffs = [&](std::span<const uint8_t> spans) -> Result<std::vector<DctBlockI16>> {
         constexpr int kOffset = 1024;
         constexpr int kNumSymbols = 2049;
 
-        std::vector<DctBlockI16> blocks(num_blocks);
+        std::vector<DctBlockI16> blocks(spans.size());
         for (int coeff_index = 0; coeff_index < 64; ++coeff_index) {
-            auto first_read = reader.read_u16();
-            auto last_read = reader.read_u16();
-            if (!first_read || !last_read) {
-                return std::unexpected(Error{ErrorCode::TruncatedInput, "missing rANS symbol range"});
+            size_t active_blocks = 0;
+            for (uint8_t span_value : spans) {
+                active_blocks += span_value > coeff_index ? 1u : 0u;
             }
 
-            const int first = *first_read;
-            const int last = *last_read;
-            if (first > last || first < 0 || last >= kNumSymbols) {
-                return std::unexpected(Error{ErrorCode::RansError, "invalid rANS symbol range"});
-            }
+            LossyCoeffTable table;
+            if (adaptive_coefficient_tables) {
+                auto parsed_table = read_coefficient_table(reader, kNumSymbols, "lossy");
+                if (!parsed_table) {
+                    return std::unexpected(parsed_table.error());
+                }
+                table = std::move(*parsed_table);
+            } else {
+                auto first_read = reader.read_u16();
+                auto last_read = reader.read_u16();
+                if (!first_read || !last_read) {
+                    return std::unexpected(Error{ErrorCode::TruncatedInput, "missing rANS symbol range"});
+                }
 
-            uint32_t counts[kNumSymbols] = {};
-            for (int symbol = first; symbol <= last; ++symbol) {
-                auto freq = reader.read_u16();
-                if (!freq) return std::unexpected(freq.error());
-                counts[symbol] = *freq;
-            }
+                const int first = *first_read;
+                const int last = *last_read;
+                if (first > last || first < 0 || last >= kNumSymbols) {
+                    return std::unexpected(Error{ErrorCode::RansError, "invalid rANS symbol range"});
+                }
 
-            RansTable<RANS_PRECISION_BITS> table;
-            table.build_from_counts(counts, kNumSymbols);
+                uint32_t counts[kNumSymbols] = {};
+                for (int symbol = first; symbol <= last; ++symbol) {
+                    auto freq = reader.read_u16();
+                    if (!freq) return std::unexpected(freq.error());
+                    counts[symbol] = *freq;
+                }
+
+                table.build_from_counts(counts, kNumSymbols);
+            }
 
             auto encoded_size = reader.read_u32();
             if (!encoded_size) return std::unexpected(encoded_size.error());
             auto encoded = reader.read_bytes(*encoded_size);
             if (!encoded) return std::unexpected(encoded.error());
+
+            if (active_blocks == 0) {
+                if (*encoded_size != 0) {
+                    return std::unexpected(Error{ErrorCode::RansError,
+                                                 "unexpected data for empty coefficient stream"});
+                }
+                continue;
+            }
 
             RansDecoder<RANS_PRECISION_BITS> decoder;
             decoder.init(encoded->data(), encoded->size());
@@ -271,7 +317,10 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
                 return std::unexpected(Error{ErrorCode::RansError, "invalid rANS stream header"});
             }
 
-            for (size_t block_index = 0; block_index < num_blocks; ++block_index) {
+            for (size_t block_index = 0; block_index < spans.size(); ++block_index) {
+                if (spans[block_index] <= coeff_index) {
+                    continue;
+                }
                 int symbol = decoder.decode(table);
                 if (!decoder.ok()) {
                     return std::unexpected(Error{ErrorCode::RansError, "corrupt rANS stream"});
@@ -283,12 +332,12 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         return blocks;
     };
 
-    auto y_coeffs = decode_plane_coeffs(num_y_blocks);
+    auto y_coeffs = decode_plane_coeffs(y_spans);
     if (!y_coeffs) return std::unexpected(y_coeffs.error());
 
-    auto cb_coeffs = decode_plane_coeffs(num_c_blocks);
+    auto cb_coeffs = decode_plane_coeffs(chroma_spans);
     if (!cb_coeffs) return std::unexpected(cb_coeffs.error());
-    auto cr_coeffs = decode_plane_coeffs(num_c_blocks);
+    auto cr_coeffs = decode_plane_coeffs(chroma_spans);
     if (!cr_coeffs) return std::unexpected(cr_coeffs.error());
 
     TileDecodeResult result;
@@ -441,7 +490,16 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
             return std::unexpected(a_modes.error());
         }
 
-        auto a_coeffs = decode_plane_coeffs(num_y_blocks);
+        std::vector<uint8_t> alpha_spans(num_y_blocks, 64);
+        if (packed_coefficient_spans) {
+            auto spans = read_packed_coefficient_spans(reader, num_y_blocks, "alpha");
+            if (!spans) {
+                return std::unexpected(spans.error());
+            }
+            alpha_spans = std::move(*spans);
+        }
+
+        auto a_coeffs = decode_plane_coeffs(alpha_spans);
         if (!a_coeffs) return std::unexpected(a_coeffs.error());
 
         result.alpha_plane.resize(static_cast<size_t>(geometry->tw) * geometry->th, max_val);

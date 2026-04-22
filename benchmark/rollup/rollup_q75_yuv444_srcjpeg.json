@@ -1,79 +1,79 @@
-﻿{
-    "profile": "q75_yuv444_srcjpeg",
-    "input_dir": "photos",
-    "total_images": 4,
-    "overall": {
-        "key": "overall",
-        "count": 4,
-        "total_wk_bytes": 911543,
-        "avg_psnr": 35.3594,
-        "avg_ssim": 0.959927,
-        "avg_chroma_psnr": 46.3542,
-        "avg_weighted_chroma_mae": 1.0018,
-        "avg_source_mean_luma": 0.4756
+{
+  "profile": "q75_yuv444_srcjpeg",
+  "input_dir": "photos",
+  "total_images": 4,
+  "overall": {
+    "key": "overall",
+    "count": 4,
+    "total_wk_bytes": 1039108,
+    "avg_psnr": 37.5682,
+    "avg_ssim": 0.974184,
+    "avg_chroma_psnr": 49.0338,
+    "avg_weighted_chroma_mae": 0.7074,
+    "avg_source_mean_luma": 0.4756
+  },
+  "by_scene_group": [
+    {
+      "key": "people",
+      "count": 2,
+      "total_wk_bytes": 40643,
+      "avg_psnr": 37.453,
+      "avg_ssim": 0.979407,
+      "avg_chroma_psnr": 49.5976,
+      "avg_weighted_chroma_mae": 0.6466,
+      "avg_source_mean_luma": 0.4583
     },
-    "by_scene_group": [
-        {
-            "key": "people",
-            "count": 2,
-            "total_wk_bytes": 38050,
-            "avg_psnr": 35.0438,
-            "avg_ssim": 0.968937,
-            "avg_chroma_psnr": 47.4152,
-            "avg_weighted_chroma_mae": 0.8503,
-            "avg_source_mean_luma": 0.4583
-        },
-        {
-            "key": "scenery",
-            "count": 2,
-            "total_wk_bytes": 873493,
-            "avg_psnr": 35.675,
-            "avg_ssim": 0.950918,
-            "avg_chroma_psnr": 45.2932,
-            "avg_weighted_chroma_mae": 1.1533,
-            "avg_source_mean_luma": 0.493
-        }
-    ],
-    "by_lighting_bucket": [
-        {
-            "key": "balanced",
-            "count": 4,
-            "total_wk_bytes": 911543,
-            "avg_psnr": 35.3594,
-            "avg_ssim": 0.959927,
-            "avg_chroma_psnr": 46.3542,
-            "avg_weighted_chroma_mae": 1.0018,
-            "avg_source_mean_luma": 0.4756
-        }
-    ],
-    "by_scene_and_lighting": [
-        {
-            "scene_group": "people",
-            "lighting_bucket": "balanced",
-            "summary": {
-                "key": "people|balanced",
-                "count": 2,
-                "total_wk_bytes": 38050,
-                "avg_psnr": 35.0438,
-                "avg_ssim": 0.968937,
-                "avg_chroma_psnr": 47.4152,
-                "avg_weighted_chroma_mae": 0.8503,
-                "avg_source_mean_luma": 0.4583
-            }
-        },
-        {
-            "scene_group": "scenery",
-            "lighting_bucket": "balanced",
-            "summary": {
-                "key": "scenery|balanced",
-                "count": 2,
-                "total_wk_bytes": 873493,
-                "avg_psnr": 35.675,
-                "avg_ssim": 0.950918,
-                "avg_chroma_psnr": 45.2932,
-                "avg_weighted_chroma_mae": 1.1533,
-                "avg_source_mean_luma": 0.493
-            }
-        }
-    ]
+    {
+      "key": "scenery",
+      "count": 2,
+      "total_wk_bytes": 998465,
+      "avg_psnr": 37.6835,
+      "avg_ssim": 0.968961,
+      "avg_chroma_psnr": 48.4699,
+      "avg_weighted_chroma_mae": 0.7682,
+      "avg_source_mean_luma": 0.4929
+    }
+  ],
+  "by_lighting_bucket": [
+    {
+      "key": "balanced",
+      "count": 4,
+      "total_wk_bytes": 1039108,
+      "avg_psnr": 37.5682,
+      "avg_ssim": 0.974184,
+      "avg_chroma_psnr": 49.0338,
+      "avg_weighted_chroma_mae": 0.7074,
+      "avg_source_mean_luma": 0.4756
+    }
+  ],
+  "by_scene_and_lighting": [
+    {
+      "scene_group": "people",
+      "lighting_bucket": "balanced",
+      "summary": {
+        "key": "people|balanced",
+        "count": 2,
+        "total_wk_bytes": 40643,
+        "avg_psnr": 37.453,
+        "avg_ssim": 0.979407,
+        "avg_chroma_psnr": 49.5976,
+        "avg_weighted_chroma_mae": 0.6466,
+        "avg_source_mean_luma": 0.4583
+      }
+    },
+    {
+      "scene_group": "scenery",
+      "lighting_bucket": "balanced",
+      "summary": {
+        "key": "scenery|balanced",
+        "count": 2,
+        "total_wk_bytes": 998465,
+        "avg_psnr": 37.6835,
+        "avg_ssim": 0.968961,
+        "avg_chroma_psnr": 48.4699,
+        "avg_weighted_chroma_mae": 0.7682,
+        "avg_source_mean_luma": 0.4929
+      }
+    }
+  ]
 }

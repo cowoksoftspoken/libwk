@@ -7,6 +7,8 @@ namespace wk {
 
 constexpr uint32_t kLossyTileLayoutTagV1 = 0x314d4843u;
 constexpr uint32_t kLossyTileLayoutTagV2 = 0x324d4843u;
+constexpr uint32_t kLossyTileLayoutTagV3 = 0x334d4843u;
+constexpr uint32_t kLossyTileLayoutTagV4 = 0x344d4843u;
 
 [[nodiscard]] constexpr size_t packed_prediction_mode_bytes(size_t mode_count) {
     return (mode_count + 1) / 2;

@@ -1,79 +1,79 @@
-﻿{
-    "profile": "q85_yuv444",
-    "input_dir": "photos/people",
-    "total_images": 3,
-    "overall": {
-        "key": "overall",
-        "count": 3,
-        "total_wk_bytes": 167743,
-        "avg_psnr": 40.8146,
-        "avg_ssim": 0.987659,
-        "avg_chroma_psnr": 52.4251,
-        "avg_weighted_chroma_mae": 0.4697,
-        "avg_source_mean_luma": 0.4633
+{
+  "profile": "q85_yuv444",
+  "input_dir": "photos/people",
+  "total_images": 3,
+  "overall": {
+    "key": "overall",
+    "count": 3,
+    "total_wk_bytes": 132559,
+    "avg_psnr": 40.8146,
+    "avg_ssim": 0.987659,
+    "avg_chroma_psnr": 52.4251,
+    "avg_weighted_chroma_mae": 0.4697,
+    "avg_source_mean_luma": 0.4633
+  },
+  "by_scene_group": [
+    {
+      "key": "people",
+      "count": 3,
+      "total_wk_bytes": 132559,
+      "avg_psnr": 40.8146,
+      "avg_ssim": 0.987659,
+      "avg_chroma_psnr": 52.4251,
+      "avg_weighted_chroma_mae": 0.4697,
+      "avg_source_mean_luma": 0.4633
+    }
+  ],
+  "by_lighting_bucket": [
+    {
+      "key": "balanced",
+      "count": 2,
+      "total_wk_bytes": 59979,
+      "avg_psnr": 39.8813,
+      "avg_ssim": 0.987962,
+      "avg_chroma_psnr": 51.4226,
+      "avg_weighted_chroma_mae": 0.5298,
+      "avg_source_mean_luma": 0.4583
     },
-    "by_scene_group": [
-        {
-            "key": "people",
-            "count": 3,
-            "total_wk_bytes": 167743,
-            "avg_psnr": 40.8146,
-            "avg_ssim": 0.987659,
-            "avg_chroma_psnr": 52.4251,
-            "avg_weighted_chroma_mae": 0.4697,
-            "avg_source_mean_luma": 0.4633
-        }
-    ],
-    "by_lighting_bucket": [
-        {
-            "key": "balanced",
-            "count": 2,
-            "total_wk_bytes": 75131,
-            "avg_psnr": 39.8814,
-            "avg_ssim": 0.987962,
-            "avg_chroma_psnr": 51.4226,
-            "avg_weighted_chroma_mae": 0.5298,
-            "avg_source_mean_luma": 0.4583
-        },
-        {
-            "key": "bright",
-            "count": 1,
-            "total_wk_bytes": 92612,
-            "avg_psnr": 42.6811,
-            "avg_ssim": 0.987054,
-            "avg_chroma_psnr": 54.4301,
-            "avg_weighted_chroma_mae": 0.3495,
-            "avg_source_mean_luma": 0.4732
-        }
-    ],
-    "by_scene_and_lighting": [
-        {
-            "scene_group": "people",
-            "lighting_bucket": "balanced",
-            "summary": {
-                "key": "people|balanced",
-                "count": 2,
-                "total_wk_bytes": 75131,
-                "avg_psnr": 39.8814,
-                "avg_ssim": 0.987962,
-                "avg_chroma_psnr": 51.4226,
-                "avg_weighted_chroma_mae": 0.5298,
-                "avg_source_mean_luma": 0.4583
-            }
-        },
-        {
-            "scene_group": "people",
-            "lighting_bucket": "bright",
-            "summary": {
-                "key": "people|bright",
-                "count": 1,
-                "total_wk_bytes": 92612,
-                "avg_psnr": 42.6811,
-                "avg_ssim": 0.987054,
-                "avg_chroma_psnr": 54.4301,
-                "avg_weighted_chroma_mae": 0.3495,
-                "avg_source_mean_luma": 0.4732
-            }
-        }
-    ]
+    {
+      "key": "bright",
+      "count": 1,
+      "total_wk_bytes": 72580,
+      "avg_psnr": 42.6811,
+      "avg_ssim": 0.987054,
+      "avg_chroma_psnr": 54.4301,
+      "avg_weighted_chroma_mae": 0.3495,
+      "avg_source_mean_luma": 0.4732
+    }
+  ],
+  "by_scene_and_lighting": [
+    {
+      "scene_group": "people",
+      "lighting_bucket": "balanced",
+      "summary": {
+        "key": "people|balanced",
+        "count": 2,
+        "total_wk_bytes": 59979,
+        "avg_psnr": 39.8813,
+        "avg_ssim": 0.987962,
+        "avg_chroma_psnr": 51.4226,
+        "avg_weighted_chroma_mae": 0.5298,
+        "avg_source_mean_luma": 0.4583
+      }
+    },
+    {
+      "scene_group": "people",
+      "lighting_bucket": "bright",
+      "summary": {
+        "key": "people|bright",
+        "count": 1,
+        "total_wk_bytes": 72580,
+        "avg_psnr": 42.6811,
+        "avg_ssim": 0.987054,
+        "avg_chroma_psnr": 54.4301,
+        "avg_weighted_chroma_mae": 0.3495,
+        "avg_source_mean_luma": 0.4732
+      }
+    }
+  ]
 }

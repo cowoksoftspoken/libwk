@@ -1,5 +1,7 @@
 
 #include "common.h"
+#include "coeff_span_stream.h"
+#include "coeff_table_stream.h"
 #include "container.h"
 #include "rans.h"
 #include "dct.h"
@@ -813,7 +815,29 @@ static Result<TileEncodeResult> encode_lossy_tile(
     tile_writer.write_u16(static_cast<uint16_t>(chroma_blocks_x));
     tile_writer.write_u16(static_cast<uint16_t>(chroma_blocks_y));
 
-    tile_writer.write_u32(kLossyTileLayoutTagV2);
+    std::vector<uint8_t> y_spans;
+    y_spans.reserve(y_blocks.size());
+    for (const auto& block : y_blocks) {
+        y_spans.push_back(compute_coefficient_span(block.quantized));
+    }
+
+    std::vector<uint8_t> chroma_spans;
+    chroma_spans.reserve(cb_blocks.size());
+    for (size_t i = 0; i < cb_blocks.size(); ++i) {
+        const uint8_t cb_span = compute_coefficient_span(cb_blocks[i].quantized);
+        const uint8_t cr_span = compute_coefficient_span(cr_blocks[i].quantized);
+        chroma_spans.push_back(std::max(cb_span, cr_span));
+    }
+
+    std::vector<uint8_t> alpha_spans;
+    if (has_alpha) {
+        alpha_spans.reserve(a_blocks.size());
+        for (const auto& block : a_blocks) {
+            alpha_spans.push_back(compute_coefficient_span(block.quantized));
+        }
+    }
+
+    tile_writer.write_u32(kLossyTileLayoutTagV4);
 
     auto write_block_modes = [&](const std::vector<BlockData>& blocks) -> Result<void> {
         std::vector<PredMode> modes;
@@ -834,47 +858,69 @@ static Result<TileEncodeResult> encode_lossy_tile(
         return std::unexpected(chroma_mode_result.error());
     }
 
-    auto rans_encode_blocks = [&](const std::vector<BlockData>& blocks) {
+    auto y_span_result = write_packed_coefficient_spans(tile_writer, y_spans);
+    if (!y_span_result) {
+        return std::unexpected(y_span_result.error());
+    }
+
+    auto chroma_span_result = write_packed_coefficient_spans(tile_writer, chroma_spans);
+    if (!chroma_span_result) {
+        return std::unexpected(chroma_span_result.error());
+    }
+
+    auto rans_encode_blocks = [&](const std::vector<BlockData>& blocks,
+                                  std::span<const uint8_t> spans) -> Result<void> {
         constexpr int OFFSET = 1024;
         constexpr int NUM_SYMBOLS = 2049;
 
         std::vector<std::array<uint32_t, 2049>> freq_counts(64);
         for (auto& fc : freq_counts) fc.fill(0);
 
-        for (const auto& bd : blocks) {
+        for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+            const auto& bd = blocks[block_index];
             for (int i = 0; i < 64; ++i) {
+                if (spans[block_index] <= i) {
+                    continue;
+                }
                 int sym = std::clamp(static_cast<int>(bd.quantized[i]) + OFFSET, 0, NUM_SYMBOLS - 1);
                 freq_counts[i][sym]++;
             }
         }
 
         for (int coeff_idx = 0; coeff_idx < 64; ++coeff_idx) {
+            size_t active_blocks = 0;
+            for (uint8_t span_value : spans) {
+                active_blocks += span_value > coeff_idx ? 1u : 0u;
+            }
+
+            if (active_blocks == 0) {
+                uint32_t single_symbol_counts[NUM_SYMBOLS] = {};
+                single_symbol_counts[OFFSET] = 1;
+                LossyCoeffTable table;
+                table.build_from_counts(single_symbol_counts, NUM_SYMBOLS);
+                auto table_result = write_coefficient_table(tile_writer, table, NUM_SYMBOLS);
+                if (!table_result) {
+                    return std::unexpected(table_result.error());
+                }
+                tile_writer.write_u32(0);
+                continue;
+            }
+
             RansTable<RANS_PRECISION_BITS> table;
             table.build_from_counts(freq_counts[coeff_idx].data(), NUM_SYMBOLS);
-
-            int first_nonzero = -1;
-            int last_nonzero = -1;
-            for (int i = 0; i < NUM_SYMBOLS; ++i) {
-                if (table.symbol(i).freq > 0) {
-                    if (first_nonzero == -1) first_nonzero = i;
-                    last_nonzero = i;
-                }
-            }
-            if (first_nonzero == -1) {
-                first_nonzero = OFFSET;
-                last_nonzero = OFFSET;
-            }
-
-            tile_writer.write_u16(static_cast<uint16_t>(first_nonzero));
-            tile_writer.write_u16(static_cast<uint16_t>(last_nonzero));
-            for (int i = first_nonzero; i <= last_nonzero; ++i) {
-                tile_writer.write_u16(table.symbol(i).freq);
+            auto table_result = write_coefficient_table(tile_writer, table, NUM_SYMBOLS);
+            if (!table_result) {
+                return std::unexpected(table_result.error());
             }
 
             RansEncoder<RANS_PRECISION_BITS> enc;
             enc.init();
             for (size_t b = blocks.size(); b > 0; --b) {
-                int sym = std::clamp(static_cast<int>(blocks[b - 1].quantized[coeff_idx]) + OFFSET,
+                const size_t block_index = b - 1;
+                if (spans[block_index] <= coeff_idx) {
+                    continue;
+                }
+                int sym = std::clamp(static_cast<int>(blocks[block_index].quantized[coeff_idx]) + OFFSET,
                                      0, NUM_SYMBOLS - 1);
                 enc.encode(table, sym);
             }
@@ -883,11 +929,23 @@ static Result<TileEncodeResult> encode_lossy_tile(
             tile_writer.write_u32(static_cast<uint32_t>(encoded.size()));
             tile_writer.write_bytes(encoded);
         }
+        return {};
     };
 
-    rans_encode_blocks(y_blocks);
-    rans_encode_blocks(cb_blocks);
-    rans_encode_blocks(cr_blocks);
+    auto y_coeff_result = rans_encode_blocks(y_blocks, y_spans);
+    if (!y_coeff_result) {
+        return std::unexpected(y_coeff_result.error());
+    }
+
+    auto cb_coeff_result = rans_encode_blocks(cb_blocks, chroma_spans);
+    if (!cb_coeff_result) {
+        return std::unexpected(cb_coeff_result.error());
+    }
+
+    auto cr_coeff_result = rans_encode_blocks(cr_blocks, chroma_spans);
+    if (!cr_coeff_result) {
+        return std::unexpected(cr_coeff_result.error());
+    }
 
     if (has_alpha) {
         for (int i = 0; i < 64; ++i) tile_writer.write_u16(quant_a.step(i));
@@ -895,7 +953,14 @@ static Result<TileEncodeResult> encode_lossy_tile(
         if (!alpha_mode_result) {
             return std::unexpected(alpha_mode_result.error());
         }
-        rans_encode_blocks(a_blocks);
+        auto alpha_span_result = write_packed_coefficient_spans(tile_writer, alpha_spans);
+        if (!alpha_span_result) {
+            return std::unexpected(alpha_span_result.error());
+        }
+        auto alpha_coeff_result = rans_encode_blocks(a_blocks, alpha_spans);
+        if (!alpha_coeff_result) {
+            return std::unexpected(alpha_coeff_result.error());
+        }
     }
 
     float score = compute_quality_score(tile_y_data.data(), reconstructed_y.data(), tw, th, max_val);
