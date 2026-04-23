@@ -192,14 +192,38 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
     }
     const bool packed_mode_streams = *layout_tag == kLossyTileLayoutTagV2 ||
                                      *layout_tag == kLossyTileLayoutTagV3 ||
-                                     *layout_tag == kLossyTileLayoutTagV4;
+                                     *layout_tag == kLossyTileLayoutTagV4 ||
+                                     *layout_tag == kLossyTileLayoutTagV5 ||
+                                     *layout_tag == kLossyTileLayoutTagV6;
     const bool raw_mode_streams = *layout_tag == kLossyTileLayoutTagV1;
     const bool packed_coefficient_spans = *layout_tag == kLossyTileLayoutTagV3 ||
-                                          *layout_tag == kLossyTileLayoutTagV4;
-    const bool adaptive_coefficient_tables = *layout_tag == kLossyTileLayoutTagV4;
+                                          *layout_tag == kLossyTileLayoutTagV4 ||
+                                          *layout_tag == kLossyTileLayoutTagV5 ||
+                                          *layout_tag == kLossyTileLayoutTagV6;
+    const bool adaptive_coefficient_tables = *layout_tag == kLossyTileLayoutTagV4 ||
+                                             *layout_tag == kLossyTileLayoutTagV5 ||
+                                             *layout_tag == kLossyTileLayoutTagV6;
     if (!packed_mode_streams && !raw_mode_streams) {
         return std::unexpected(Error{ErrorCode::DecodeFailed, "unsupported lossy tile layout"});
     }
+
+    uint8_t syntax_flags = 0;
+    if (*layout_tag == kLossyTileLayoutTagV6) {
+        auto flags = reader.read_u8();
+        if (!flags) {
+            return std::unexpected(Error{ErrorCode::TruncatedInput, "missing lossy tile syntax flags"});
+        }
+        syntax_flags = *flags;
+        if ((syntax_flags & ~(kLossyTileSyntaxFlagAdaptiveSpanStreams |
+                              kLossyTileSyntaxFlagPlaneCoeffExtents)) != 0) {
+            return std::unexpected(Error{ErrorCode::DecodeFailed, "lossy tile syntax flags are invalid"});
+        }
+    }
+    const bool adaptive_span_streams = *layout_tag == kLossyTileLayoutTagV6 &&
+        (syntax_flags & kLossyTileSyntaxFlagAdaptiveSpanStreams) != 0;
+    const bool explicit_plane_max_coeff_spans = *layout_tag == kLossyTileLayoutTagV5 ||
+        (*layout_tag == kLossyTileLayoutTagV6 &&
+         (syntax_flags & kLossyTileSyntaxFlagPlaneCoeffExtents) != 0);
 
     auto geometry = infer_tile_geometry(tile_x, tile_y, tile_size, image_width, image_height,
                                         blocks_x, blocks_y, chroma_blocks_x, chroma_blocks_y,
@@ -241,7 +265,9 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
 
     std::vector<uint8_t> y_spans(num_y_blocks, 64);
     if (packed_coefficient_spans) {
-        auto spans = read_packed_coefficient_spans(reader, num_y_blocks, "luma");
+        auto spans = adaptive_span_streams
+            ? read_adaptive_coefficient_spans(reader, num_y_blocks, "luma")
+            : read_packed_coefficient_spans(reader, num_y_blocks, "luma");
         if (!spans) {
             return std::unexpected(spans.error());
         }
@@ -250,19 +276,52 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
 
     std::vector<uint8_t> chroma_spans(num_c_blocks, 64);
     if (packed_coefficient_spans) {
-        auto spans = read_packed_coefficient_spans(reader, num_c_blocks, "chroma");
+        auto spans = adaptive_span_streams
+            ? read_adaptive_coefficient_spans(reader, num_c_blocks, "chroma")
+            : read_packed_coefficient_spans(reader, num_c_blocks, "chroma");
         if (!spans) {
             return std::unexpected(spans.error());
         }
         chroma_spans = std::move(*spans);
     }
 
-    auto decode_plane_coeffs = [&](std::span<const uint8_t> spans) -> Result<std::vector<DctBlockI16>> {
+    uint8_t y_max_coeff_span = 64;
+    uint8_t chroma_max_coeff_span = 64;
+    if (explicit_plane_max_coeff_spans) {
+        auto y_max = reader.read_u8();
+        auto chroma_max = reader.read_u8();
+        if (!y_max || !chroma_max) {
+            return std::unexpected(Error{ErrorCode::TruncatedInput,
+                                         "missing plane coefficient extents"});
+        }
+        y_max_coeff_span = *y_max;
+        chroma_max_coeff_span = *chroma_max;
+    }
+
+    if (y_max_coeff_span > 64 || chroma_max_coeff_span > 64) {
+        return std::unexpected(Error{ErrorCode::DecodeFailed,
+                                     "plane coefficient extent is out of range"});
+    }
+    for (uint8_t span_value : y_spans) {
+        if (span_value > y_max_coeff_span) {
+            return std::unexpected(Error{ErrorCode::DecodeFailed,
+                                         "luma coefficient span exceeds plane extent"});
+        }
+    }
+    for (uint8_t span_value : chroma_spans) {
+        if (span_value > chroma_max_coeff_span) {
+            return std::unexpected(Error{ErrorCode::DecodeFailed,
+                                         "chroma coefficient span exceeds plane extent"});
+        }
+    }
+
+    auto decode_plane_coeffs = [&](std::span<const uint8_t> spans,
+                                   uint8_t max_coeff_span) -> Result<std::vector<DctBlockI16>> {
         constexpr int kOffset = 1024;
         constexpr int kNumSymbols = 2049;
 
         std::vector<DctBlockI16> blocks(spans.size());
-        for (int coeff_index = 0; coeff_index < 64; ++coeff_index) {
+        for (int coeff_index = 0; coeff_index < max_coeff_span; ++coeff_index) {
             size_t active_blocks = 0;
             for (uint8_t span_value : spans) {
                 active_blocks += span_value > coeff_index ? 1u : 0u;
@@ -332,12 +391,12 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         return blocks;
     };
 
-    auto y_coeffs = decode_plane_coeffs(y_spans);
+    auto y_coeffs = decode_plane_coeffs(y_spans, y_max_coeff_span);
     if (!y_coeffs) return std::unexpected(y_coeffs.error());
 
-    auto cb_coeffs = decode_plane_coeffs(chroma_spans);
+    auto cb_coeffs = decode_plane_coeffs(chroma_spans, chroma_max_coeff_span);
     if (!cb_coeffs) return std::unexpected(cb_coeffs.error());
-    auto cr_coeffs = decode_plane_coeffs(chroma_spans);
+    auto cr_coeffs = decode_plane_coeffs(chroma_spans, chroma_max_coeff_span);
     if (!cr_coeffs) return std::unexpected(cr_coeffs.error());
 
     TileDecodeResult result;
@@ -492,14 +551,36 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
 
         std::vector<uint8_t> alpha_spans(num_y_blocks, 64);
         if (packed_coefficient_spans) {
-            auto spans = read_packed_coefficient_spans(reader, num_y_blocks, "alpha");
+            auto spans = adaptive_span_streams
+                ? read_adaptive_coefficient_spans(reader, num_y_blocks, "alpha")
+                : read_packed_coefficient_spans(reader, num_y_blocks, "alpha");
             if (!spans) {
                 return std::unexpected(spans.error());
             }
             alpha_spans = std::move(*spans);
         }
 
-        auto a_coeffs = decode_plane_coeffs(alpha_spans);
+        uint8_t alpha_max_coeff_span = 64;
+        if (explicit_plane_max_coeff_spans) {
+            auto alpha_max = reader.read_u8();
+            if (!alpha_max) {
+                return std::unexpected(Error{ErrorCode::TruncatedInput,
+                                             "missing alpha coefficient extent"});
+            }
+            alpha_max_coeff_span = *alpha_max;
+        }
+        if (alpha_max_coeff_span > 64) {
+            return std::unexpected(Error{ErrorCode::DecodeFailed,
+                                         "alpha coefficient extent is out of range"});
+        }
+        for (uint8_t span_value : alpha_spans) {
+            if (span_value > alpha_max_coeff_span) {
+                return std::unexpected(Error{ErrorCode::DecodeFailed,
+                                             "alpha coefficient span exceeds plane extent"});
+            }
+        }
+
+        auto a_coeffs = decode_plane_coeffs(alpha_spans, alpha_max_coeff_span);
         if (!a_coeffs) return std::unexpected(a_coeffs.error());
 
         result.alpha_plane.resize(static_cast<size_t>(geometry->tw) * geometry->th, max_val);

@@ -837,7 +837,61 @@ static Result<TileEncodeResult> encode_lossy_tile(
         }
     }
 
-    tile_writer.write_u32(kLossyTileLayoutTagV4);
+    const uint8_t y_max_coeff_span = y_spans.empty()
+        ? 0
+        : *std::max_element(y_spans.begin(), y_spans.end());
+    const uint8_t chroma_max_coeff_span = chroma_spans.empty()
+        ? 0
+        : *std::max_element(chroma_spans.begin(), chroma_spans.end());
+    const uint8_t alpha_max_coeff_span = alpha_spans.empty()
+        ? 0
+        : *std::max_element(alpha_spans.begin(), alpha_spans.end());
+    const size_t plane_extent_overhead = 2u + (has_alpha ? 1u : 0u);
+    const size_t estimated_plane_extent_savings =
+        static_cast<size_t>(64 - y_max_coeff_span) * 7u +
+        static_cast<size_t>(64 - chroma_max_coeff_span) * 14u +
+        static_cast<size_t>(64 - alpha_max_coeff_span) * (has_alpha ? 7u : 0u);
+    const bool use_plane_max_coeff_spans = estimated_plane_extent_savings > plane_extent_overhead;
+    const size_t legacy_span_stream_bytes =
+        sizeof(uint16_t) + packed_coefficient_span_bytes(y_spans.size()) +
+        sizeof(uint16_t) + packed_coefficient_span_bytes(chroma_spans.size()) +
+        (has_alpha ? sizeof(uint16_t) + packed_coefficient_span_bytes(alpha_spans.size()) : 0u);
+    auto adaptive_y_span_bytes = adaptive_coefficient_span_stream_bytes(y_spans);
+    if (!adaptive_y_span_bytes) {
+        return std::unexpected(adaptive_y_span_bytes.error());
+    }
+    auto adaptive_chroma_span_bytes = adaptive_coefficient_span_stream_bytes(chroma_spans);
+    if (!adaptive_chroma_span_bytes) {
+        return std::unexpected(adaptive_chroma_span_bytes.error());
+    }
+    size_t adaptive_alpha_span_bytes = 0;
+    if (has_alpha) {
+        auto encoded_alpha_span_bytes = adaptive_coefficient_span_stream_bytes(alpha_spans);
+        if (!encoded_alpha_span_bytes) {
+            return std::unexpected(encoded_alpha_span_bytes.error());
+        }
+        adaptive_alpha_span_bytes = *encoded_alpha_span_bytes;
+    }
+    const size_t adaptive_span_stream_bytes =
+        *adaptive_y_span_bytes + *adaptive_chroma_span_bytes +
+        adaptive_alpha_span_bytes;
+    const size_t adaptive_span_layout_overhead = 1u;
+    const bool use_adaptive_span_streams =
+        adaptive_span_stream_bytes + adaptive_span_layout_overhead < legacy_span_stream_bytes;
+
+    if (use_adaptive_span_streams) {
+        uint8_t syntax_flags = 0;
+        syntax_flags |= kLossyTileSyntaxFlagAdaptiveSpanStreams;
+        if (use_plane_max_coeff_spans) {
+            syntax_flags |= kLossyTileSyntaxFlagPlaneCoeffExtents;
+        }
+        tile_writer.write_u32(kLossyTileLayoutTagV6);
+        tile_writer.write_u8(syntax_flags);
+    } else if (use_plane_max_coeff_spans) {
+        tile_writer.write_u32(kLossyTileLayoutTagV5);
+    } else {
+        tile_writer.write_u32(kLossyTileLayoutTagV4);
+    }
 
     auto write_block_modes = [&](const std::vector<BlockData>& blocks) -> Result<void> {
         std::vector<PredMode> modes;
@@ -858,18 +912,28 @@ static Result<TileEncodeResult> encode_lossy_tile(
         return std::unexpected(chroma_mode_result.error());
     }
 
-    auto y_span_result = write_packed_coefficient_spans(tile_writer, y_spans);
+    auto y_span_result = use_adaptive_span_streams
+        ? write_adaptive_coefficient_spans(tile_writer, y_spans)
+        : write_packed_coefficient_spans(tile_writer, y_spans);
     if (!y_span_result) {
         return std::unexpected(y_span_result.error());
     }
 
-    auto chroma_span_result = write_packed_coefficient_spans(tile_writer, chroma_spans);
+    auto chroma_span_result = use_adaptive_span_streams
+        ? write_adaptive_coefficient_spans(tile_writer, chroma_spans)
+        : write_packed_coefficient_spans(tile_writer, chroma_spans);
     if (!chroma_span_result) {
         return std::unexpected(chroma_span_result.error());
     }
 
+    if (use_plane_max_coeff_spans) {
+        tile_writer.write_u8(y_max_coeff_span);
+        tile_writer.write_u8(chroma_max_coeff_span);
+    }
+
     auto rans_encode_blocks = [&](const std::vector<BlockData>& blocks,
-                                  std::span<const uint8_t> spans) -> Result<void> {
+                                  std::span<const uint8_t> spans,
+                                  uint8_t max_coeff_span) -> Result<void> {
         constexpr int OFFSET = 1024;
         constexpr int NUM_SYMBOLS = 2049;
 
@@ -887,7 +951,8 @@ static Result<TileEncodeResult> encode_lossy_tile(
             }
         }
 
-        for (int coeff_idx = 0; coeff_idx < 64; ++coeff_idx) {
+        const int coeff_limit = use_plane_max_coeff_spans ? max_coeff_span : 64;
+        for (int coeff_idx = 0; coeff_idx < coeff_limit; ++coeff_idx) {
             size_t active_blocks = 0;
             for (uint8_t span_value : spans) {
                 active_blocks += span_value > coeff_idx ? 1u : 0u;
@@ -932,17 +997,17 @@ static Result<TileEncodeResult> encode_lossy_tile(
         return {};
     };
 
-    auto y_coeff_result = rans_encode_blocks(y_blocks, y_spans);
+    auto y_coeff_result = rans_encode_blocks(y_blocks, y_spans, y_max_coeff_span);
     if (!y_coeff_result) {
         return std::unexpected(y_coeff_result.error());
     }
 
-    auto cb_coeff_result = rans_encode_blocks(cb_blocks, chroma_spans);
+    auto cb_coeff_result = rans_encode_blocks(cb_blocks, chroma_spans, chroma_max_coeff_span);
     if (!cb_coeff_result) {
         return std::unexpected(cb_coeff_result.error());
     }
 
-    auto cr_coeff_result = rans_encode_blocks(cr_blocks, chroma_spans);
+    auto cr_coeff_result = rans_encode_blocks(cr_blocks, chroma_spans, chroma_max_coeff_span);
     if (!cr_coeff_result) {
         return std::unexpected(cr_coeff_result.error());
     }
@@ -953,11 +1018,16 @@ static Result<TileEncodeResult> encode_lossy_tile(
         if (!alpha_mode_result) {
             return std::unexpected(alpha_mode_result.error());
         }
-        auto alpha_span_result = write_packed_coefficient_spans(tile_writer, alpha_spans);
+        auto alpha_span_result = use_adaptive_span_streams
+            ? write_adaptive_coefficient_spans(tile_writer, alpha_spans)
+            : write_packed_coefficient_spans(tile_writer, alpha_spans);
         if (!alpha_span_result) {
             return std::unexpected(alpha_span_result.error());
         }
-        auto alpha_coeff_result = rans_encode_blocks(a_blocks, alpha_spans);
+        if (use_plane_max_coeff_spans) {
+            tile_writer.write_u8(alpha_max_coeff_span);
+        }
+        auto alpha_coeff_result = rans_encode_blocks(a_blocks, alpha_spans, alpha_max_coeff_span);
         if (!alpha_coeff_result) {
             return std::unexpected(alpha_coeff_result.error());
         }

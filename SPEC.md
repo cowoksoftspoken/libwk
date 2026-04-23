@@ -97,11 +97,20 @@ FILE HEADER (magic + version)
    - Layout tag `0x324D4843` stores a `uint16` packed-byte length followed by 4-bit prediction modes packed two per byte.
    - Layout tag `0x334D4843` keeps the packed prediction mode streams and additionally stores packed coefficient-span streams.
    - Layout tag `0x344D4843` keeps the packed prediction modes and coefficient spans, and switches coefficient-table metadata to adaptive serialization.
+   - Layout tag `0x354D4843` keeps packed modes, coefficient spans, adaptive coefficient tables, and additionally stores per-plane maximum coefficient extents so fully empty high-frequency contexts can be omitted.
+   - Layout tag `0x364D4843` stores one `uint8` syntax-flags field after the layout tag. Bit `0` enables adaptive coefficient-span stream encodings and bit `1` enables per-plane maximum coefficient extents.
    - Layout tag `0x314D4843` is the legacy layout and stores one `uint8` prediction mode per block.
    - One stream is stored for luma blocks and one stream is stored for chroma blocks.
 5. **Coefficient span streams**:
    - Layout tag `0x334D4843` stores one packed span stream for luma blocks and one packed span stream for chroma blocks.
    - Layout tag `0x344D4843` keeps the same span signaling.
+   - Layout tag `0x354D4843` keeps the same span signaling and stores one `uint8` maximum coefficient extent for luma and one `uint8` extent for chroma immediately after the span streams.
+   - Layout tag `0x364D4843` uses the syntax-flags field to choose the span signaling:
+     - If syntax flag bit `0` is clear, span streams use the legacy `uint16 packed-byte length + raw 7-bit packed spans` format.
+     - If syntax flag bit `0` is set, each span stream starts with a tagged `uint16` header:
+       - top bits `00`: raw 7-bit packed span payload, lower 14 bits = payload byte count
+       - top bits `01`: single span value repeated for every block, lower 7 bits = span value
+       - top bits `10`: run-length payload, lower 14 bits = payload byte count, payload = repeated `(run_length:uint16, span_value:uint8)` tuples
    - Each span is a 7-bit value in the range `0..64` and represents how many zigzag-ordered coefficients are present for the block.
    - Coefficients at positions `>= span` are implicitly zero and are not entropy-coded.
 6. **Coefficient-table metadata**:
@@ -110,8 +119,10 @@ FILE HEADER (magic + version)
      - `0`: single-symbol table, followed by one `uint16` symbol id
      - `1`: dense range, followed by `first_symbol`, `last_symbol`, and dense `uint16` frequencies
      - `2`: sparse pairs, followed by `pair_count` and repeated `(symbol, frequency)` pairs
+   - Layout tag `0x354D4843` uses the same table encodings, but only serializes coefficient contexts below the stored per-plane maximum coefficient extent.
+   - Layout tag `0x364D4843` uses the same table encodings and applies the same per-plane extent omission only when syntax flag bit `1` is set.
 7. **rANS-coded coefficients**: per-coefficient-position encoding with frequency tables for Y, Cb, and Cr
-8. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, then an alpha prediction mode stream using the same layout-tag-defined signaling, then an alpha coefficient-span stream when the layout tag is `0x334D4843` or `0x344D4843`, then one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
+8. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, then an alpha prediction mode stream using the same layout-tag-defined signaling, then an alpha coefficient-span stream when the layout tag is `0x334D4843`, `0x344D4843`, `0x354D4843`, or `0x364D4843`, then an alpha maximum coefficient extent when the layout tag is `0x354D4843` or when layout tag `0x364D4843` has syntax flag bit `1` set, then one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
 
 ### 3.3 Lossless Tile Payload
 

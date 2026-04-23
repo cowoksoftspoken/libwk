@@ -5,7 +5,7 @@
   "overall": {
     "key": "overall",
     "count": 4,
-    "total_wk_bytes": 1568651,
+    "total_wk_bytes": 1568557,
     "avg_psnr": 40.5132,
     "avg_ssim": 0.985804,
     "avg_chroma_psnr": 51.2465,
@@ -16,7 +16,7 @@
     {
       "key": "people",
       "count": 2,
-      "total_wk_bytes": 59979,
+      "total_wk_bytes": 59925,
       "avg_psnr": 39.8813,
       "avg_ssim": 0.987962,
       "avg_chroma_psnr": 51.4226,
@@ -26,7 +26,7 @@
     {
       "key": "scenery",
       "count": 2,
-      "total_wk_bytes": 1508672,
+      "total_wk_bytes": 1508632,
       "avg_psnr": 41.1452,
       "avg_ssim": 0.983647,
       "avg_chroma_psnr": 51.0704,
@@ -38,7 +38,7 @@
     {
       "key": "balanced",
       "count": 4,
-      "total_wk_bytes": 1568651,
+      "total_wk_bytes": 1568557,
       "avg_psnr": 40.5132,
       "avg_ssim": 0.985804,
       "avg_chroma_psnr": 51.2465,
@@ -53,7 +53,7 @@
       "summary": {
         "key": "people|balanced",
         "count": 2,
-        "total_wk_bytes": 59979,
+        "total_wk_bytes": 59925,
         "avg_psnr": 39.8813,
         "avg_ssim": 0.987962,
         "avg_chroma_psnr": 51.4226,
@@ -67,7 +67,7 @@
       "summary": {
         "key": "scenery|balanced",
         "count": 2,
-        "total_wk_bytes": 1508672,
+        "total_wk_bytes": 1508632,
         "avg_psnr": 41.1452,
         "avg_ssim": 0.983647,
         "avg_chroma_psnr": 51.0704,

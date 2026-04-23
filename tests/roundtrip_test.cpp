@@ -105,6 +105,65 @@ std::filesystem::path sample_photo_path() {
     return find_photo_named("ember-7f3a.jpg");
 }
 
+constexpr size_t kTileHeaderBytes = 9u;
+constexpr size_t kQuantTableBytes = 64u * sizeof(uint16_t) * 2u;
+constexpr size_t kBlockDimensionBytes = 4u * sizeof(uint16_t);
+constexpr size_t kLayoutTagBytes = sizeof(uint32_t);
+constexpr size_t kLossySyntaxBaseOffset = kTileHeaderBytes + kQuantTableBytes + kBlockDimensionBytes;
+
+struct LossyTileSyntaxInfo {
+    uint32_t layout_tag = 0;
+    uint8_t syntax_flags = 0;
+    size_t stream_offset = 0;
+    bool adaptive_spans = false;
+    bool plane_extents = false;
+};
+
+Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> payload) {
+    if (payload.size() < kLossySyntaxBaseOffset + kLayoutTagBytes) {
+        return std::unexpected(Error{ErrorCode::TruncatedInput, "lossy payload is missing layout tag"});
+    }
+
+    LossyTileSyntaxInfo info;
+    info.layout_tag = read_le32(payload.data() + kLossySyntaxBaseOffset);
+    info.stream_offset = kLossySyntaxBaseOffset + kLayoutTagBytes;
+    if (info.layout_tag == kLossyTileLayoutTagV6) {
+        if (payload.size() <= info.stream_offset) {
+            return std::unexpected(Error{ErrorCode::TruncatedInput, "lossy payload is missing syntax flags"});
+        }
+        info.syntax_flags = payload[info.stream_offset++];
+        info.adaptive_spans =
+            (info.syntax_flags & kLossyTileSyntaxFlagAdaptiveSpanStreams) != 0;
+        info.plane_extents =
+            (info.syntax_flags & kLossyTileSyntaxFlagPlaneCoeffExtents) != 0;
+    } else if (info.layout_tag == kLossyTileLayoutTagV5) {
+        info.plane_extents = true;
+    }
+
+    return info;
+}
+
+size_t encoded_coefficient_span_stream_bytes(std::span<const uint8_t> payload,
+                                             size_t offset,
+                                             bool adaptive_spans,
+                                             size_t expected_count) {
+    if (!adaptive_spans) {
+        return sizeof(uint16_t) + packed_coefficient_span_bytes(expected_count);
+    }
+
+    const uint16_t header = read_le16(payload.data() + offset);
+    const uint16_t encoding = static_cast<uint16_t>(header & 0xC000u);
+    const uint16_t encoded_bytes = static_cast<uint16_t>(header & 0x3FFFu);
+    switch (encoding) {
+    case 0x0000u:
+    case 0x8000u:
+        return sizeof(uint16_t) + encoded_bytes;
+    case 0x4000u:
+    default:
+        return sizeof(uint16_t);
+    }
+}
+
 }
 
 TEST(RoundtripTest, LosslessSmallImage) {
@@ -379,12 +438,9 @@ TEST(RoundtripTest, PackedModeStreamCorruptionRejected) {
     ASSERT_EQ(file->tile_chunks.size(), 1u);
 
     auto& payload = file->tile_chunks.front().payload;
-    constexpr size_t kTileHeaderBytes = 9;
-    constexpr size_t kQuantTableBytes = 64u * sizeof(uint16_t) * 2u;
-    constexpr size_t kBlockDimensionBytes = 4u * sizeof(uint16_t);
-    constexpr size_t kLayoutTagBytes = sizeof(uint32_t);
-    const size_t mode_size_offset =
-        kTileHeaderBytes + kQuantTableBytes + kBlockDimensionBytes + kLayoutTagBytes;
+    auto syntax = parse_lossy_tile_syntax(payload);
+    ASSERT_TRUE(syntax.has_value()) << syntax.error().message;
+    const size_t mode_size_offset = syntax->stream_offset;
 
     ASSERT_GT(payload.size(), mode_size_offset + sizeof(uint16_t) - 1);
     payload[mode_size_offset + 0] = 0;
@@ -413,21 +469,62 @@ TEST(RoundtripTest, PackedCoefficientSpanCorruptionRejected) {
     ASSERT_EQ(file->tile_chunks.size(), 1u);
 
     auto& payload = file->tile_chunks.front().payload;
-    constexpr size_t kTileHeaderBytes = 9;
-    constexpr size_t kQuantTableBytes = 64u * sizeof(uint16_t) * 2u;
-    constexpr size_t kBlockDimensionBytes = 4u * sizeof(uint16_t);
-    constexpr size_t kLayoutTagBytes = sizeof(uint32_t);
+    auto syntax = parse_lossy_tile_syntax(payload);
+    ASSERT_TRUE(syntax.has_value()) << syntax.error().message;
     const size_t y_blocks = 9;
     const size_t chroma_blocks = 9;
-    const size_t mode_bytes_offset =
-        kTileHeaderBytes + kQuantTableBytes + kBlockDimensionBytes + kLayoutTagBytes;
     const size_t y_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(y_blocks);
     const size_t chroma_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(chroma_blocks);
-    const size_t span_size_offset = mode_bytes_offset + y_mode_stream_bytes + chroma_mode_stream_bytes;
+    const size_t span_size_offset = syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes;
 
     ASSERT_GT(payload.size(), span_size_offset + sizeof(uint16_t) - 1);
     payload[span_size_offset + 0] = 0;
-    payload[span_size_offset + 1] = 0;
+    payload[span_size_offset + 1] = 0xC0;
+
+    auto broken = write_container(*file);
+    ASSERT_TRUE(broken.has_value()) << broken.error().message;
+
+    auto decoded = decode(*broken);
+    EXPECT_FALSE(decoded.has_value());
+    EXPECT_EQ(decoded.error().code, ErrorCode::DecodeFailed);
+}
+
+TEST(RoundtripTest, PlaneCoefficientExtentCorruptionRejected) {
+    Image image(24, 24, BitDepth::Bits8, false);
+    for (auto& byte : image.pixels()) {
+        byte = 96;
+    }
+
+    EncoderConfig config;
+    config.quality = 85.0f;
+    config.subsampling = Subsampling::YUV444;
+
+    auto encoded = encode(image, config);
+    ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+
+    auto file = parse_container(*encoded);
+    ASSERT_TRUE(file.has_value()) << file.error().message;
+    ASSERT_EQ(file->tile_chunks.size(), 1u);
+
+    auto& payload = file->tile_chunks.front().payload;
+    auto syntax = parse_lossy_tile_syntax(payload);
+    ASSERT_TRUE(syntax.has_value()) << syntax.error().message;
+    const size_t y_blocks = 9;
+    const size_t chroma_blocks = 9;
+    const size_t y_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(y_blocks);
+    const size_t chroma_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(chroma_blocks);
+    const size_t y_span_stream_bytes = encoded_coefficient_span_stream_bytes(
+        payload, syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes,
+        syntax->adaptive_spans, y_blocks);
+    const size_t chroma_span_stream_bytes = encoded_coefficient_span_stream_bytes(
+        payload, syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes + y_span_stream_bytes,
+        syntax->adaptive_spans, chroma_blocks);
+    const size_t plane_extent_offset = syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes +
+                                       y_span_stream_bytes + chroma_span_stream_bytes;
+
+    ASSERT_TRUE(syntax->plane_extents);
+    ASSERT_GT(payload.size(), plane_extent_offset);
+    payload[plane_extent_offset] = 0;
 
     auto broken = write_container(*file);
     ASSERT_TRUE(broken.has_value()) << broken.error().message;
@@ -452,19 +549,21 @@ TEST(RoundtripTest, CoefficientTableCorruptionRejected) {
     ASSERT_EQ(file->tile_chunks.size(), 1u);
 
     auto& payload = file->tile_chunks.front().payload;
-    constexpr size_t kTileHeaderBytes = 9;
-    constexpr size_t kQuantTableBytes = 64u * sizeof(uint16_t) * 2u;
-    constexpr size_t kBlockDimensionBytes = 4u * sizeof(uint16_t);
-    constexpr size_t kLayoutTagBytes = sizeof(uint32_t);
+    auto syntax = parse_lossy_tile_syntax(payload);
+    ASSERT_TRUE(syntax.has_value()) << syntax.error().message;
     const size_t y_blocks = 9;
     const size_t chroma_blocks = 9;
     const size_t y_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(y_blocks);
     const size_t chroma_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(chroma_blocks);
-    const size_t y_span_stream_bytes = sizeof(uint16_t) + packed_coefficient_span_bytes(y_blocks);
-    const size_t chroma_span_stream_bytes = sizeof(uint16_t) + packed_coefficient_span_bytes(chroma_blocks);
-    const size_t coeff_table_offset = kTileHeaderBytes + kQuantTableBytes + kBlockDimensionBytes +
-                                      kLayoutTagBytes + y_mode_stream_bytes + chroma_mode_stream_bytes +
-                                      y_span_stream_bytes + chroma_span_stream_bytes;
+    const size_t y_span_stream_bytes = encoded_coefficient_span_stream_bytes(
+        payload, syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes,
+        syntax->adaptive_spans, y_blocks);
+    const size_t chroma_span_stream_bytes = encoded_coefficient_span_stream_bytes(
+        payload, syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes + y_span_stream_bytes,
+        syntax->adaptive_spans, chroma_blocks);
+    const size_t plane_extent_bytes = syntax->plane_extents ? 2u : 0u;
+    const size_t coeff_table_offset = syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes +
+                                      y_span_stream_bytes + chroma_span_stream_bytes + plane_extent_bytes;
 
     ASSERT_GT(payload.size(), coeff_table_offset);
     payload[coeff_table_offset] = 0xFF;
