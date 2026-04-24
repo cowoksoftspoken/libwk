@@ -1,10 +1,9 @@
 
 #include "common.h"
 #include "coeff_span_stream.h"
-#include "coeff_table_stream.h"
 #include "container.h"
-#include "rans.h"
 #include "dct.h"
+#include "lossy_coeff_stream.h"
 #include "mode_stream.h"
 #include "quantize.h"
 #include "predict.h"
@@ -26,6 +25,20 @@ struct TileEncodeResult {
     std::vector<uint8_t> compressed;
     float    quality_score;
 };
+
+struct BlockData {
+    PredMode mode;
+    DctBlockI16 quantized;
+};
+
+static std::vector<DctBlockI16> collect_quantized_blocks(const std::vector<BlockData>& blocks) {
+    std::vector<DctBlockI16> quantized_blocks;
+    quantized_blocks.reserve(blocks.size());
+    for (const auto& block : blocks) {
+        quantized_blocks.push_back(block.quantized);
+    }
+    return quantized_blocks;
+}
 
 static Result<uint8_t> resolve_tile_size_log2(const EncoderConfig& config) {
     if (config.tile_size_log2 != 0) {
@@ -409,11 +422,6 @@ static Result<TileEncodeResult> encode_lossy_tile(
 
     uint32_t blocks_x = (tw + 7) / 8;
     uint32_t blocks_y = (th + 7) / 8;
-
-    struct BlockData {
-        PredMode mode;
-        DctBlockI16 quantized;
-    };
 
     std::vector<BlockData> y_blocks(blocks_x * blocks_y);
     std::vector<BlockData> cb_blocks, cr_blocks, a_blocks;
@@ -878,12 +886,115 @@ static Result<TileEncodeResult> encode_lossy_tile(
     const size_t adaptive_span_layout_overhead = 1u;
     const bool use_adaptive_span_streams =
         adaptive_span_stream_bytes + adaptive_span_layout_overhead < legacy_span_stream_bytes;
+    const auto y_quantized_blocks = collect_quantized_blocks(y_blocks);
+    const auto cb_quantized_blocks = collect_quantized_blocks(cb_blocks);
+    const auto cr_quantized_blocks = collect_quantized_blocks(cr_blocks);
+    const auto a_quantized_blocks = has_alpha ? collect_quantized_blocks(a_blocks) : std::vector<DctBlockI16>{};
 
-    if (use_adaptive_span_streams) {
+    const LossyCoeffStreamConfig legacy_coeff_config{
+        .use_plane_max_coeff_span = use_plane_max_coeff_spans,
+        .split_magnitude_signs = false,
+    };
+    const LossyCoeffStreamConfig split_coeff_config{
+        .use_plane_max_coeff_span = use_plane_max_coeff_spans,
+        .split_magnitude_signs = true,
+    };
+
+    auto y_legacy_coeff_payload = encode_lossy_plane_payload(y_quantized_blocks, y_spans, y_max_coeff_span, legacy_coeff_config);
+    if (!y_legacy_coeff_payload) {
+        return std::unexpected(y_legacy_coeff_payload.error());
+    }
+    auto cb_legacy_coeff_payload = encode_lossy_plane_payload(cb_quantized_blocks, chroma_spans, chroma_max_coeff_span, legacy_coeff_config);
+    if (!cb_legacy_coeff_payload) {
+        return std::unexpected(cb_legacy_coeff_payload.error());
+    }
+    auto cr_legacy_coeff_payload = encode_lossy_plane_payload(cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, legacy_coeff_config);
+    if (!cr_legacy_coeff_payload) {
+        return std::unexpected(cr_legacy_coeff_payload.error());
+    }
+    Result<std::vector<uint8_t>> alpha_legacy_coeff_payload = std::vector<uint8_t>{};
+    if (has_alpha) {
+        alpha_legacy_coeff_payload = encode_lossy_plane_payload(a_quantized_blocks, alpha_spans, alpha_max_coeff_span, legacy_coeff_config);
+        if (!alpha_legacy_coeff_payload) {
+            return std::unexpected(alpha_legacy_coeff_payload.error());
+        }
+    }
+
+    auto y_split_coeff_payload = encode_lossy_plane_payload(y_quantized_blocks, y_spans, y_max_coeff_span, split_coeff_config);
+    if (!y_split_coeff_payload) {
+        return std::unexpected(y_split_coeff_payload.error());
+    }
+    auto cb_split_coeff_payload = encode_lossy_plane_payload(cb_quantized_blocks, chroma_spans, chroma_max_coeff_span, split_coeff_config);
+    if (!cb_split_coeff_payload) {
+        return std::unexpected(cb_split_coeff_payload.error());
+    }
+    auto cr_split_coeff_payload = encode_lossy_plane_payload(cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, split_coeff_config);
+    if (!cr_split_coeff_payload) {
+        return std::unexpected(cr_split_coeff_payload.error());
+    }
+    Result<std::vector<uint8_t>> alpha_split_coeff_payload = std::vector<uint8_t>{};
+    if (has_alpha) {
+        alpha_split_coeff_payload = encode_lossy_plane_payload(a_quantized_blocks, alpha_spans, alpha_max_coeff_span, split_coeff_config);
+        if (!alpha_split_coeff_payload) {
+            return std::unexpected(alpha_split_coeff_payload.error());
+        }
+    }
+
+    const size_t legacy_coeff_payload_bytes =
+        y_legacy_coeff_payload->size() +
+        cb_legacy_coeff_payload->size() +
+        cr_legacy_coeff_payload->size() +
+        (has_alpha ? alpha_legacy_coeff_payload->size() : 0u);
+    const size_t split_coeff_payload_bytes =
+        y_split_coeff_payload->size() +
+        cb_split_coeff_payload->size() +
+        cr_split_coeff_payload->size() +
+        (has_alpha ? alpha_split_coeff_payload->size() : 0u);
+    const size_t split_sign_layout_overhead = use_adaptive_span_streams ? 0u : 1u;
+    const bool use_split_magnitude_signs =
+        split_coeff_payload_bytes + split_sign_layout_overhead < legacy_coeff_payload_bytes;
+
+    const auto& selected_y_coeff_payload = use_split_magnitude_signs ? *y_split_coeff_payload
+                                                                     : *y_legacy_coeff_payload;
+    const auto& selected_alpha_coeff_payload = use_split_magnitude_signs ? *alpha_split_coeff_payload
+                                                                         : *alpha_legacy_coeff_payload;
+
+    auto shared_legacy_chroma_payload = encode_lossy_chroma_payload(
+        cb_quantized_blocks, cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, legacy_coeff_config);
+    if (!shared_legacy_chroma_payload) {
+        return std::unexpected(shared_legacy_chroma_payload.error());
+    }
+    auto shared_split_chroma_payload = encode_lossy_chroma_payload(
+        cb_quantized_blocks, cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, split_coeff_config);
+    if (!shared_split_chroma_payload) {
+        return std::unexpected(shared_split_chroma_payload.error());
+    }
+    const auto& selected_independent_cb_payload = use_split_magnitude_signs ? *cb_split_coeff_payload
+                                                                            : *cb_legacy_coeff_payload;
+    const auto& selected_independent_cr_payload = use_split_magnitude_signs ? *cr_split_coeff_payload
+                                                                            : *cr_legacy_coeff_payload;
+    const auto& selected_shared_chroma_payload = use_split_magnitude_signs ? *shared_split_chroma_payload
+                                                                           : *shared_legacy_chroma_payload;
+    const size_t independent_chroma_payload_bytes =
+        selected_independent_cb_payload.size() + selected_independent_cr_payload.size();
+    const size_t shared_chroma_layout_overhead =
+        (use_adaptive_span_streams || use_split_magnitude_signs) ? 0u : 1u;
+    const bool use_shared_chroma_coeff_tables =
+        selected_shared_chroma_payload.size() + shared_chroma_layout_overhead < independent_chroma_payload_bytes;
+
+    if (use_adaptive_span_streams || use_split_magnitude_signs || use_shared_chroma_coeff_tables) {
         uint8_t syntax_flags = 0;
-        syntax_flags |= kLossyTileSyntaxFlagAdaptiveSpanStreams;
+        if (use_adaptive_span_streams) {
+            syntax_flags |= kLossyTileSyntaxFlagAdaptiveSpanStreams;
+        }
         if (use_plane_max_coeff_spans) {
             syntax_flags |= kLossyTileSyntaxFlagPlaneCoeffExtents;
+        }
+        if (use_split_magnitude_signs) {
+            syntax_flags |= kLossyTileSyntaxFlagSplitMagnitudeSigns;
+        }
+        if (use_shared_chroma_coeff_tables) {
+            syntax_flags |= kLossyTileSyntaxFlagSharedChromaCoeffTables;
         }
         tile_writer.write_u32(kLossyTileLayoutTagV6);
         tile_writer.write_u8(syntax_flags);
@@ -931,85 +1042,12 @@ static Result<TileEncodeResult> encode_lossy_tile(
         tile_writer.write_u8(chroma_max_coeff_span);
     }
 
-    auto rans_encode_blocks = [&](const std::vector<BlockData>& blocks,
-                                  std::span<const uint8_t> spans,
-                                  uint8_t max_coeff_span) -> Result<void> {
-        constexpr int OFFSET = 1024;
-        constexpr int NUM_SYMBOLS = 2049;
-
-        std::vector<std::array<uint32_t, 2049>> freq_counts(64);
-        for (auto& fc : freq_counts) fc.fill(0);
-
-        for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
-            const auto& bd = blocks[block_index];
-            for (int i = 0; i < 64; ++i) {
-                if (spans[block_index] <= i) {
-                    continue;
-                }
-                int sym = std::clamp(static_cast<int>(bd.quantized[i]) + OFFSET, 0, NUM_SYMBOLS - 1);
-                freq_counts[i][sym]++;
-            }
-        }
-
-        const int coeff_limit = use_plane_max_coeff_spans ? max_coeff_span : 64;
-        for (int coeff_idx = 0; coeff_idx < coeff_limit; ++coeff_idx) {
-            size_t active_blocks = 0;
-            for (uint8_t span_value : spans) {
-                active_blocks += span_value > coeff_idx ? 1u : 0u;
-            }
-
-            if (active_blocks == 0) {
-                uint32_t single_symbol_counts[NUM_SYMBOLS] = {};
-                single_symbol_counts[OFFSET] = 1;
-                LossyCoeffTable table;
-                table.build_from_counts(single_symbol_counts, NUM_SYMBOLS);
-                auto table_result = write_coefficient_table(tile_writer, table, NUM_SYMBOLS);
-                if (!table_result) {
-                    return std::unexpected(table_result.error());
-                }
-                tile_writer.write_u32(0);
-                continue;
-            }
-
-            RansTable<RANS_PRECISION_BITS> table;
-            table.build_from_counts(freq_counts[coeff_idx].data(), NUM_SYMBOLS);
-            auto table_result = write_coefficient_table(tile_writer, table, NUM_SYMBOLS);
-            if (!table_result) {
-                return std::unexpected(table_result.error());
-            }
-
-            RansEncoder<RANS_PRECISION_BITS> enc;
-            enc.init();
-            for (size_t b = blocks.size(); b > 0; --b) {
-                const size_t block_index = b - 1;
-                if (spans[block_index] <= coeff_idx) {
-                    continue;
-                }
-                int sym = std::clamp(static_cast<int>(blocks[block_index].quantized[coeff_idx]) + OFFSET,
-                                     0, NUM_SYMBOLS - 1);
-                enc.encode(table, sym);
-            }
-            auto encoded = enc.finish();
-
-            tile_writer.write_u32(static_cast<uint32_t>(encoded.size()));
-            tile_writer.write_bytes(encoded);
-        }
-        return {};
-    };
-
-    auto y_coeff_result = rans_encode_blocks(y_blocks, y_spans, y_max_coeff_span);
-    if (!y_coeff_result) {
-        return std::unexpected(y_coeff_result.error());
-    }
-
-    auto cb_coeff_result = rans_encode_blocks(cb_blocks, chroma_spans, chroma_max_coeff_span);
-    if (!cb_coeff_result) {
-        return std::unexpected(cb_coeff_result.error());
-    }
-
-    auto cr_coeff_result = rans_encode_blocks(cr_blocks, chroma_spans, chroma_max_coeff_span);
-    if (!cr_coeff_result) {
-        return std::unexpected(cr_coeff_result.error());
+    tile_writer.write_bytes(selected_y_coeff_payload);
+    if (use_shared_chroma_coeff_tables) {
+        tile_writer.write_bytes(selected_shared_chroma_payload);
+    } else {
+        tile_writer.write_bytes(selected_independent_cb_payload);
+        tile_writer.write_bytes(selected_independent_cr_payload);
     }
 
     if (has_alpha) {
@@ -1027,10 +1065,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
         if (use_plane_max_coeff_spans) {
             tile_writer.write_u8(alpha_max_coeff_span);
         }
-        auto alpha_coeff_result = rans_encode_blocks(a_blocks, alpha_spans, alpha_max_coeff_span);
-        if (!alpha_coeff_result) {
-            return std::unexpected(alpha_coeff_result.error());
-        }
+        tile_writer.write_bytes(selected_alpha_coeff_payload);
     }
 
     float score = compute_quality_score(tile_y_data.data(), reconstructed_y.data(), tw, th, max_val);

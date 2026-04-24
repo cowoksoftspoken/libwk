@@ -1,10 +1,9 @@
 
 #include "common.h"
 #include "coeff_span_stream.h"
-#include "coeff_table_stream.h"
 #include "container.h"
-#include "rans.h"
 #include "dct.h"
+#include "lossy_coeff_stream.h"
 #include "mode_stream.h"
 #include "predict.h"
 #include "colorspace.h"
@@ -215,12 +214,18 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         }
         syntax_flags = *flags;
         if ((syntax_flags & ~(kLossyTileSyntaxFlagAdaptiveSpanStreams |
-                              kLossyTileSyntaxFlagPlaneCoeffExtents)) != 0) {
+                              kLossyTileSyntaxFlagPlaneCoeffExtents |
+                              kLossyTileSyntaxFlagSplitMagnitudeSigns |
+                              kLossyTileSyntaxFlagSharedChromaCoeffTables)) != 0) {
             return std::unexpected(Error{ErrorCode::DecodeFailed, "lossy tile syntax flags are invalid"});
         }
     }
     const bool adaptive_span_streams = *layout_tag == kLossyTileLayoutTagV6 &&
         (syntax_flags & kLossyTileSyntaxFlagAdaptiveSpanStreams) != 0;
+    const bool split_magnitude_signs = *layout_tag == kLossyTileLayoutTagV6 &&
+        (syntax_flags & kLossyTileSyntaxFlagSplitMagnitudeSigns) != 0;
+    const bool shared_chroma_coeff_tables = *layout_tag == kLossyTileLayoutTagV6 &&
+        (syntax_flags & kLossyTileSyntaxFlagSharedChromaCoeffTables) != 0;
     const bool explicit_plane_max_coeff_spans = *layout_tag == kLossyTileLayoutTagV5 ||
         (*layout_tag == kLossyTileLayoutTagV6 &&
          (syntax_flags & kLossyTileSyntaxFlagPlaneCoeffExtents) != 0);
@@ -315,89 +320,32 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         }
     }
 
-    auto decode_plane_coeffs = [&](std::span<const uint8_t> spans,
-                                   uint8_t max_coeff_span) -> Result<std::vector<DctBlockI16>> {
-        constexpr int kOffset = 1024;
-        constexpr int kNumSymbols = 2049;
-
-        std::vector<DctBlockI16> blocks(spans.size());
-        for (int coeff_index = 0; coeff_index < max_coeff_span; ++coeff_index) {
-            size_t active_blocks = 0;
-            for (uint8_t span_value : spans) {
-                active_blocks += span_value > coeff_index ? 1u : 0u;
-            }
-
-            LossyCoeffTable table;
-            if (adaptive_coefficient_tables) {
-                auto parsed_table = read_coefficient_table(reader, kNumSymbols, "lossy");
-                if (!parsed_table) {
-                    return std::unexpected(parsed_table.error());
-                }
-                table = std::move(*parsed_table);
-            } else {
-                auto first_read = reader.read_u16();
-                auto last_read = reader.read_u16();
-                if (!first_read || !last_read) {
-                    return std::unexpected(Error{ErrorCode::TruncatedInput, "missing rANS symbol range"});
-                }
-
-                const int first = *first_read;
-                const int last = *last_read;
-                if (first > last || first < 0 || last >= kNumSymbols) {
-                    return std::unexpected(Error{ErrorCode::RansError, "invalid rANS symbol range"});
-                }
-
-                uint32_t counts[kNumSymbols] = {};
-                for (int symbol = first; symbol <= last; ++symbol) {
-                    auto freq = reader.read_u16();
-                    if (!freq) return std::unexpected(freq.error());
-                    counts[symbol] = *freq;
-                }
-
-                table.build_from_counts(counts, kNumSymbols);
-            }
-
-            auto encoded_size = reader.read_u32();
-            if (!encoded_size) return std::unexpected(encoded_size.error());
-            auto encoded = reader.read_bytes(*encoded_size);
-            if (!encoded) return std::unexpected(encoded.error());
-
-            if (active_blocks == 0) {
-                if (*encoded_size != 0) {
-                    return std::unexpected(Error{ErrorCode::RansError,
-                                                 "unexpected data for empty coefficient stream"});
-                }
-                continue;
-            }
-
-            RansDecoder<RANS_PRECISION_BITS> decoder;
-            decoder.init(encoded->data(), encoded->size());
-            if (!decoder.ok()) {
-                return std::unexpected(Error{ErrorCode::RansError, "invalid rANS stream header"});
-            }
-
-            for (size_t block_index = 0; block_index < spans.size(); ++block_index) {
-                if (spans[block_index] <= coeff_index) {
-                    continue;
-                }
-                int symbol = decoder.decode(table);
-                if (!decoder.ok()) {
-                    return std::unexpected(Error{ErrorCode::RansError, "corrupt rANS stream"});
-                }
-                blocks[block_index][coeff_index] = static_cast<int16_t>(symbol - kOffset);
-            }
-        }
-
-        return blocks;
+    const LossyCoeffStreamConfig coeff_config{
+        .use_plane_max_coeff_span = explicit_plane_max_coeff_spans,
+        .adaptive_coefficient_tables = adaptive_coefficient_tables,
+        .split_magnitude_signs = split_magnitude_signs,
     };
 
-    auto y_coeffs = decode_plane_coeffs(y_spans, y_max_coeff_span);
+    auto y_coeffs = decode_lossy_plane_payload(reader, y_spans, y_max_coeff_span, coeff_config);
     if (!y_coeffs) return std::unexpected(y_coeffs.error());
 
-    auto cb_coeffs = decode_plane_coeffs(chroma_spans, chroma_max_coeff_span);
-    if (!cb_coeffs) return std::unexpected(cb_coeffs.error());
-    auto cr_coeffs = decode_plane_coeffs(chroma_spans, chroma_max_coeff_span);
-    if (!cr_coeffs) return std::unexpected(cr_coeffs.error());
+    std::vector<DctBlockI16> cb_coeffs;
+    std::vector<DctBlockI16> cr_coeffs;
+    if (shared_chroma_coeff_tables) {
+        auto chroma_coeffs = decode_lossy_chroma_payload(reader, chroma_spans, chroma_max_coeff_span, coeff_config);
+        if (!chroma_coeffs) {
+            return std::unexpected(chroma_coeffs.error());
+        }
+        cb_coeffs = std::move(chroma_coeffs->cb_blocks);
+        cr_coeffs = std::move(chroma_coeffs->cr_blocks);
+    } else {
+        auto cb_plane = decode_lossy_plane_payload(reader, chroma_spans, chroma_max_coeff_span, coeff_config);
+        if (!cb_plane) return std::unexpected(cb_plane.error());
+        auto cr_plane = decode_lossy_plane_payload(reader, chroma_spans, chroma_max_coeff_span, coeff_config);
+        if (!cr_plane) return std::unexpected(cr_plane.error());
+        cb_coeffs = std::move(*cb_plane);
+        cr_coeffs = std::move(*cr_plane);
+    }
 
     TileDecodeResult result;
     result.tile_x = tile_x;
@@ -527,8 +475,8 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         }
     };
 
-    reconstruct_chroma(*cb_coeffs, *chroma_modes, result.cb_plane);
-    reconstruct_chroma(*cr_coeffs, *chroma_modes, result.cr_plane);
+    reconstruct_chroma(cb_coeffs, *chroma_modes, result.cb_plane);
+    reconstruct_chroma(cr_coeffs, *chroma_modes, result.cr_plane);
 
     if (has_alpha != tile_has_alpha) {
         return std::unexpected(Error{ErrorCode::DecodeFailed,
@@ -580,7 +528,7 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
             }
         }
 
-        auto a_coeffs = decode_plane_coeffs(alpha_spans, alpha_max_coeff_span);
+        auto a_coeffs = decode_lossy_plane_payload(reader, alpha_spans, alpha_max_coeff_span, coeff_config);
         if (!a_coeffs) return std::unexpected(a_coeffs.error());
 
         result.alpha_plane.resize(static_cast<size_t>(geometry->tw) * geometry->th, max_val);

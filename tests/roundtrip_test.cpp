@@ -4,11 +4,14 @@
 #include <array>
 #include <wk/wk.hpp>
 #include "../src/common.h"
+#include "../src/coeff_sign_stream.h"
 #include "../src/container.h"
 #include "../src/coeff_span_stream.h"
+#include "../src/coeff_table_stream.h"
 #include "../src/image_io.h"
 #include "../src/metrics.h"
 #include "../src/mode_stream.h"
+#include "../src/rans.h"
 #include <cmath>
 #include <filesystem>
 
@@ -117,6 +120,8 @@ struct LossyTileSyntaxInfo {
     size_t stream_offset = 0;
     bool adaptive_spans = false;
     bool plane_extents = false;
+    bool split_magnitude_signs = false;
+    bool shared_chroma_tables = false;
 };
 
 Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> payload) {
@@ -136,6 +141,10 @@ Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> pay
             (info.syntax_flags & kLossyTileSyntaxFlagAdaptiveSpanStreams) != 0;
         info.plane_extents =
             (info.syntax_flags & kLossyTileSyntaxFlagPlaneCoeffExtents) != 0;
+        info.split_magnitude_signs =
+            (info.syntax_flags & kLossyTileSyntaxFlagSplitMagnitudeSigns) != 0;
+        info.shared_chroma_tables =
+            (info.syntax_flags & kLossyTileSyntaxFlagSharedChromaCoeffTables) != 0;
     } else if (info.layout_tag == kLossyTileLayoutTagV5) {
         info.plane_extents = true;
     }
@@ -480,6 +489,89 @@ TEST(RoundtripTest, PackedCoefficientSpanCorruptionRejected) {
     ASSERT_GT(payload.size(), span_size_offset + sizeof(uint16_t) - 1);
     payload[span_size_offset + 0] = 0;
     payload[span_size_offset + 1] = 0xC0;
+
+    auto broken = write_container(*file);
+    ASSERT_TRUE(broken.has_value()) << broken.error().message;
+
+    auto decoded = decode(*broken);
+    EXPECT_FALSE(decoded.has_value());
+    EXPECT_EQ(decoded.error().code, ErrorCode::DecodeFailed);
+}
+
+TEST(RoundtripTest, CoefficientSignCorruptionRejected) {
+    Image image = make_rgb_gradient(24, 24);
+
+    EncoderConfig config;
+    config.quality = 85.0f;
+    config.subsampling = Subsampling::YUV444;
+
+    auto encoded = encode(image, config);
+    ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+
+    auto file = parse_container(*encoded);
+    ASSERT_TRUE(file.has_value()) << file.error().message;
+    ASSERT_EQ(file->tile_chunks.size(), 1u);
+
+    auto& payload = file->tile_chunks.front().payload;
+    auto syntax = parse_lossy_tile_syntax(payload);
+    ASSERT_TRUE(syntax.has_value()) << syntax.error().message;
+    ASSERT_TRUE(syntax->split_magnitude_signs);
+
+    const size_t y_blocks = 9;
+    const size_t chroma_blocks = 9;
+    ByteReader reader(std::span<const uint8_t>(payload.data() + syntax->stream_offset,
+                                               payload.size() - syntax->stream_offset));
+
+    auto y_modes = read_packed_prediction_modes(reader, y_blocks, "luma");
+    ASSERT_TRUE(y_modes.has_value()) << y_modes.error().message;
+    auto chroma_modes = read_packed_prediction_modes(reader, chroma_blocks, "chroma");
+    ASSERT_TRUE(chroma_modes.has_value()) << chroma_modes.error().message;
+
+    auto y_spans = syntax->adaptive_spans
+        ? read_adaptive_coefficient_spans(reader, y_blocks, "luma")
+        : read_packed_coefficient_spans(reader, y_blocks, "luma");
+    ASSERT_TRUE(y_spans.has_value()) << y_spans.error().message;
+    auto chroma_spans = syntax->adaptive_spans
+        ? read_adaptive_coefficient_spans(reader, chroma_blocks, "chroma")
+        : read_packed_coefficient_spans(reader, chroma_blocks, "chroma");
+    ASSERT_TRUE(chroma_spans.has_value()) << chroma_spans.error().message;
+
+    if (syntax->plane_extents) {
+        auto y_extent = reader.read_u8();
+        auto chroma_extent = reader.read_u8();
+        ASSERT_TRUE(y_extent.has_value()) << y_extent.error().message;
+        ASSERT_TRUE(chroma_extent.has_value()) << chroma_extent.error().message;
+    }
+
+    auto table = read_coefficient_table(reader, 1025, "lossy");
+    ASSERT_TRUE(table.has_value()) << table.error().message;
+
+    auto encoded_size = reader.read_u32();
+    ASSERT_TRUE(encoded_size.has_value()) << encoded_size.error().message;
+    auto encoded_bytes = reader.read_bytes(*encoded_size);
+    ASSERT_TRUE(encoded_bytes.has_value()) << encoded_bytes.error().message;
+
+    RansDecoder<RANS_PRECISION_BITS> decoder;
+    decoder.init(encoded_bytes->data(), encoded_bytes->size());
+    ASSERT_TRUE(decoder.ok());
+
+    size_t nonzero_count = 0;
+    for (size_t block_index = 0; block_index < y_blocks; ++block_index) {
+        if ((*y_spans)[block_index] == 0) {
+            continue;
+        }
+        const int symbol = decoder.decode(*table);
+        ASSERT_TRUE(decoder.ok());
+        nonzero_count += symbol != 0 ? 1u : 0u;
+    }
+
+    ASSERT_GT(nonzero_count, 0u);
+    ASSERT_NE(nonzero_count % 8u, 0u);
+
+    const size_t sign_offset = syntax->stream_offset + reader.position();
+    const size_t sign_bytes = packed_coefficient_sign_bytes(nonzero_count);
+    ASSERT_GT(payload.size(), sign_offset + sign_bytes - 1);
+    payload[sign_offset + sign_bytes - 1] |= 0x80;
 
     auto broken = write_container(*file);
     ASSERT_TRUE(broken.has_value()) << broken.error().message;

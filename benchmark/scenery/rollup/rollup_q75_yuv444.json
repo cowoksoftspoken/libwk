@@ -1,79 +1,79 @@
-{
-  "profile": "q75_yuv444",
-  "input_dir": "photos/scenery",
-  "total_images": 3,
-  "overall": {
-    "key": "overall",
-    "count": 3,
-    "total_wk_bytes": 1244317,
-    "avg_psnr": 36.6665,
-    "avg_ssim": 0.947197,
-    "avg_chroma_psnr": 46.0237,
-    "avg_weighted_chroma_mae": 1.0366,
-    "avg_source_mean_luma": 0.5557
-  },
-  "by_scene_group": [
-    {
-      "key": "scenery",
-      "count": 3,
-      "total_wk_bytes": 1244317,
-      "avg_psnr": 36.6665,
-      "avg_ssim": 0.947197,
-      "avg_chroma_psnr": 46.0237,
-      "avg_weighted_chroma_mae": 1.0366,
-      "avg_source_mean_luma": 0.5557
-    }
-  ],
-  "by_lighting_bucket": [
-    {
-      "key": "balanced",
-      "count": 2,
-      "total_wk_bytes": 997920,
-      "avg_psnr": 37.6835,
-      "avg_ssim": 0.968961,
-      "avg_chroma_psnr": 48.4699,
-      "avg_weighted_chroma_mae": 0.7682,
-      "avg_source_mean_luma": 0.4929
-    },
-    {
-      "key": "bright",
-      "count": 1,
-      "total_wk_bytes": 246397,
-      "avg_psnr": 34.6326,
-      "avg_ssim": 0.903669,
-      "avg_chroma_psnr": 41.1312,
-      "avg_weighted_chroma_mae": 1.5733,
-      "avg_source_mean_luma": 0.6811
-    }
-  ],
-  "by_scene_and_lighting": [
-    {
-      "scene_group": "scenery",
-      "lighting_bucket": "balanced",
-      "summary": {
-        "key": "scenery|balanced",
-        "count": 2,
-        "total_wk_bytes": 997920,
-        "avg_psnr": 37.6835,
-        "avg_ssim": 0.968961,
-        "avg_chroma_psnr": 48.4699,
-        "avg_weighted_chroma_mae": 0.7682,
-        "avg_source_mean_luma": 0.4929
-      }
-    },
-    {
-      "scene_group": "scenery",
-      "lighting_bucket": "bright",
-      "summary": {
-        "key": "scenery|bright",
-        "count": 1,
-        "total_wk_bytes": 246397,
-        "avg_psnr": 34.6326,
-        "avg_ssim": 0.903669,
-        "avg_chroma_psnr": 41.1312,
-        "avg_weighted_chroma_mae": 1.5733,
-        "avg_source_mean_luma": 0.6811
-      }
-    }
-  ]
+﻿{
+    "profile":  "q75_yuv444",
+    "input_dir":  "photos/scenery",
+    "total_images":  3,
+    "overall":  {
+                    "key":  "overall",
+                    "count":  3,
+                    "total_wk_bytes":  1221900,
+                    "avg_psnr":  36.6665,
+                    "avg_ssim":  0.947197,
+                    "avg_chroma_psnr":  46.0237,
+                    "avg_weighted_chroma_mae":  1.0366,
+                    "avg_source_mean_luma":  0.5557
+                },
+    "by_scene_group":  [
+                           {
+                               "key":  "scenery",
+                               "count":  3,
+                               "total_wk_bytes":  1221900,
+                               "avg_psnr":  36.6665,
+                               "avg_ssim":  0.947197,
+                               "avg_chroma_psnr":  46.0237,
+                               "avg_weighted_chroma_mae":  1.0366,
+                               "avg_source_mean_luma":  0.5557
+                           }
+                       ],
+    "by_lighting_bucket":  [
+                               {
+                                   "key":  "balanced",
+                                   "count":  2,
+                                   "total_wk_bytes":  983480,
+                                   "avg_psnr":  37.6834,
+                                   "avg_ssim":  0.96896,
+                                   "avg_chroma_psnr":  48.4699,
+                                   "avg_weighted_chroma_mae":  0.7682,
+                                   "avg_source_mean_luma":  0.493
+                               },
+                               {
+                                   "key":  "bright",
+                                   "count":  1,
+                                   "total_wk_bytes":  238420,
+                                   "avg_psnr":  34.6326,
+                                   "avg_ssim":  0.90366899999999994,
+                                   "avg_chroma_psnr":  41.1312,
+                                   "avg_weighted_chroma_mae":  1.5733,
+                                   "avg_source_mean_luma":  0.6811
+                               }
+                           ],
+    "by_scene_and_lighting":  [
+                                  {
+                                      "scene_group":  "scenery",
+                                      "lighting_bucket":  "balanced",
+                                      "summary":  {
+                                                      "key":  "scenery|balanced",
+                                                      "count":  2,
+                                                      "total_wk_bytes":  983480,
+                                                      "avg_psnr":  37.6834,
+                                                      "avg_ssim":  0.96896,
+                                                      "avg_chroma_psnr":  48.4699,
+                                                      "avg_weighted_chroma_mae":  0.7682,
+                                                      "avg_source_mean_luma":  0.493
+                                                  }
+                                  },
+                                  {
+                                      "scene_group":  "scenery",
+                                      "lighting_bucket":  "bright",
+                                      "summary":  {
+                                                      "key":  "scenery|bright",
+                                                      "count":  1,
+                                                      "total_wk_bytes":  238420,
+                                                      "avg_psnr":  34.6326,
+                                                      "avg_ssim":  0.90366899999999994,
+                                                      "avg_chroma_psnr":  41.1312,
+                                                      "avg_weighted_chroma_mae":  1.5733,
+                                                      "avg_source_mean_luma":  0.6811
+                                                  }
+                                  }
+                              ]
 }
