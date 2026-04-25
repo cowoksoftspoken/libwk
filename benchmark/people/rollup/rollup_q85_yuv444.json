@@ -5,7 +5,7 @@
     "overall":  {
                     "key":  "overall",
                     "count":  3,
-                    "total_wk_bytes":  117441,
+                    "total_wk_bytes":  116588,
                     "avg_psnr":  40.8146,
                     "avg_ssim":  0.987659,
                     "avg_chroma_psnr":  52.4251,
@@ -16,7 +16,7 @@
                            {
                                "key":  "people",
                                "count":  3,
-                               "total_wk_bytes":  117441,
+                               "total_wk_bytes":  116588,
                                "avg_psnr":  40.8146,
                                "avg_ssim":  0.987659,
                                "avg_chroma_psnr":  52.4251,
@@ -28,7 +28,7 @@
                                {
                                    "key":  "balanced",
                                    "count":  2,
-                                   "total_wk_bytes":  52400,
+                                   "total_wk_bytes":  52106,
                                    "avg_psnr":  39.8814,
                                    "avg_ssim":  0.987962,
                                    "avg_chroma_psnr":  51.4226,
@@ -38,7 +38,7 @@
                                {
                                    "key":  "bright",
                                    "count":  1,
-                                   "total_wk_bytes":  65041,
+                                   "total_wk_bytes":  64482,
                                    "avg_psnr":  42.6811,
                                    "avg_ssim":  0.987054,
                                    "avg_chroma_psnr":  54.4301,
@@ -53,7 +53,7 @@
                                       "summary":  {
                                                       "key":  "people|balanced",
                                                       "count":  2,
-                                                      "total_wk_bytes":  52400,
+                                                      "total_wk_bytes":  52106,
                                                       "avg_psnr":  39.8814,
                                                       "avg_ssim":  0.987962,
                                                       "avg_chroma_psnr":  51.4226,
@@ -67,7 +67,7 @@
                                       "summary":  {
                                                       "key":  "people|bright",
                                                       "count":  1,
-                                                      "total_wk_bytes":  65041,
+                                                      "total_wk_bytes":  64482,
                                                       "avg_psnr":  42.6811,
                                                       "avg_ssim":  0.987054,
                                                       "avg_chroma_psnr":  54.4301,

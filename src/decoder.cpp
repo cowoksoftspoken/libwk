@@ -216,7 +216,9 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         if ((syntax_flags & ~(kLossyTileSyntaxFlagAdaptiveSpanStreams |
                               kLossyTileSyntaxFlagPlaneCoeffExtents |
                               kLossyTileSyntaxFlagSplitMagnitudeSigns |
-                              kLossyTileSyntaxFlagSharedChromaCoeffTables)) != 0) {
+                              kLossyTileSyntaxFlagSharedChromaCoeffTables |
+                              kLossyTileSyntaxFlagCoefficientTableBank |
+                              kLossyTileSyntaxFlagElideSingleSymbolStreams)) != 0) {
             return std::unexpected(Error{ErrorCode::DecodeFailed, "lossy tile syntax flags are invalid"});
         }
     }
@@ -226,6 +228,10 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         (syntax_flags & kLossyTileSyntaxFlagSplitMagnitudeSigns) != 0;
     const bool shared_chroma_coeff_tables = *layout_tag == kLossyTileLayoutTagV6 &&
         (syntax_flags & kLossyTileSyntaxFlagSharedChromaCoeffTables) != 0;
+    const bool coefficient_table_bank = *layout_tag == kLossyTileLayoutTagV6 &&
+        (syntax_flags & kLossyTileSyntaxFlagCoefficientTableBank) != 0;
+    const bool elide_single_symbol_streams = *layout_tag == kLossyTileLayoutTagV6 &&
+        (syntax_flags & kLossyTileSyntaxFlagElideSingleSymbolStreams) != 0;
     const bool explicit_plane_max_coeff_spans = *layout_tag == kLossyTileLayoutTagV5 ||
         (*layout_tag == kLossyTileLayoutTagV6 &&
          (syntax_flags & kLossyTileSyntaxFlagPlaneCoeffExtents) != 0);
@@ -324,6 +330,8 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         .use_plane_max_coeff_span = explicit_plane_max_coeff_spans,
         .adaptive_coefficient_tables = adaptive_coefficient_tables,
         .split_magnitude_signs = split_magnitude_signs,
+        .use_table_bank = coefficient_table_bank,
+        .elide_single_symbol_streams = elide_single_symbol_streams,
     };
 
     auto y_coeffs = decode_lossy_plane_payload(reader, y_spans, y_max_coeff_span, coeff_config);

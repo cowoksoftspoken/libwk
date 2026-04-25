@@ -45,6 +45,14 @@ TEST(LossyCoeffStreamTest, PlanePayloadRoundTripsAcrossTableModes) {
              LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = false,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = false,
+                                    .use_table_bank = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = true,
+                                    .use_table_bank = true},
          }) {
         auto payload = encode_lossy_plane_payload(blocks, spans, 4, config);
         ASSERT_TRUE(payload.has_value()) << payload.error().message;
@@ -80,6 +88,14 @@ TEST(LossyCoeffStreamTest, SharedChromaPayloadRoundTripsAcrossTableModes) {
              LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = false,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = false,
+                                    .use_table_bank = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = true,
+                                    .use_table_bank = true},
          }) {
         auto payload = encode_lossy_chroma_payload(cb_blocks, cr_blocks, spans, 4, config);
         ASSERT_TRUE(payload.has_value()) << payload.error().message;
@@ -129,4 +145,39 @@ TEST(LossyCoeffStreamTest, SharedChromaPayloadShrinksWhenPlanesShareStatistics) 
     ASSERT_TRUE(shared.has_value()) << shared.error().message;
 
     EXPECT_LT(shared->size(), independent_cb->size() + independent_cr->size());
+}
+
+TEST(LossyCoeffStreamTest, SingleSymbolStreamElisionShrinksSplitMagnitudePayload) {
+    const std::array<DctBlockI16, 5> blocks = {
+        make_block({{0, 3}, {1, -2}}),
+        make_block({{0, -3}, {1, 2}}),
+        make_block({{0, 3}, {1, -2}}),
+        make_block({{0, -3}, {1, 2}}),
+        make_block({{0, 3}, {1, -2}})
+    };
+    const std::array<uint8_t, 5> spans = {2, 2, 2, 2, 2};
+
+    const LossyCoeffStreamConfig base_config{
+        .use_plane_max_coeff_span = false,
+        .adaptive_coefficient_tables = true,
+        .split_magnitude_signs = true,
+    };
+    const LossyCoeffStreamConfig elided_config{
+        .use_plane_max_coeff_span = false,
+        .adaptive_coefficient_tables = true,
+        .split_magnitude_signs = true,
+        .elide_single_symbol_streams = true,
+    };
+
+    auto base_payload = encode_lossy_plane_payload(blocks, spans, 2, base_config);
+    ASSERT_TRUE(base_payload.has_value()) << base_payload.error().message;
+    auto elided_payload = encode_lossy_plane_payload(blocks, spans, 2, elided_config);
+    ASSERT_TRUE(elided_payload.has_value()) << elided_payload.error().message;
+
+    EXPECT_LT(elided_payload->size(), base_payload->size());
+
+    ByteReader reader(*elided_payload);
+    auto decoded = decode_lossy_plane_payload(reader, spans, 2, elided_config);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+    expect_blocks_equal(*decoded, blocks);
 }

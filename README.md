@@ -1,4 +1,4 @@
-# WK
+﻿# WK
 
 WK is an experimental still-image codec and container centered around a native `.wk` bitstream, structured `WKMETA` metadata, a small CLI toolchain, measurable image-quality analysis, and a desktop compare viewer for visual inspection.
 
@@ -17,6 +17,7 @@ WK is not claimed yet as a finished replacement for JPEG, WebP, or AVIF. The cur
 Below is a real `wkview` compare screenshot stored in this repo at `extra/ember-7f3a_q85_demo.png`.
 It shows a decoded benchmark output against the original JPEG source.
 
+![WK Viewer compare demo](extra/noctis-8c1f_q75_yuv444_demo.png)
 ![WK Viewer compare demo](extra/ember-7f3a_q85_demo.png)
 
 The viewer is no longer just a raw image window. It now shows:

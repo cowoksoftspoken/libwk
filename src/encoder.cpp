@@ -958,6 +958,9 @@ static Result<TileEncodeResult> encode_lossy_tile(
                                                                      : *y_legacy_coeff_payload;
     const auto& selected_alpha_coeff_payload = use_split_magnitude_signs ? *alpha_split_coeff_payload
                                                                          : *alpha_legacy_coeff_payload;
+    const LossyCoeffStreamConfig selected_coeff_config = use_split_magnitude_signs
+        ? split_coeff_config
+        : legacy_coeff_config;
 
     auto shared_legacy_chroma_payload = encode_lossy_chroma_payload(
         cb_quantized_blocks, cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, legacy_coeff_config);
@@ -979,10 +982,131 @@ static Result<TileEncodeResult> encode_lossy_tile(
         selected_independent_cb_payload.size() + selected_independent_cr_payload.size();
     const size_t shared_chroma_layout_overhead =
         (use_adaptive_span_streams || use_split_magnitude_signs) ? 0u : 1u;
-    const bool use_shared_chroma_coeff_tables =
+    const bool base_use_shared_chroma_coeff_tables =
         selected_shared_chroma_payload.size() + shared_chroma_layout_overhead < independent_chroma_payload_bytes;
+    const size_t base_chroma_coeff_payload_bytes = base_use_shared_chroma_coeff_tables
+        ? selected_shared_chroma_payload.size()
+        : independent_chroma_payload_bytes;
+    const size_t base_lossy_syntax_bytes =
+        (use_adaptive_span_streams || use_split_magnitude_signs || base_use_shared_chroma_coeff_tables) ? 1u : 0u;
+    const size_t base_coeff_payload_bytes =
+        selected_y_coeff_payload.size() +
+        base_chroma_coeff_payload_bytes +
+        (has_alpha ? selected_alpha_coeff_payload.size() : 0u) +
+        base_lossy_syntax_bytes;
 
-    if (use_adaptive_span_streams || use_split_magnitude_signs || use_shared_chroma_coeff_tables) {
+    LossyCoeffStreamConfig bank_coeff_config = selected_coeff_config;
+    bank_coeff_config.use_table_bank = true;
+
+    auto y_banked_coeff_payload = encode_lossy_plane_payload(y_quantized_blocks, y_spans, y_max_coeff_span, bank_coeff_config);
+    if (!y_banked_coeff_payload) {
+        return std::unexpected(y_banked_coeff_payload.error());
+    }
+    auto cb_banked_coeff_payload = encode_lossy_plane_payload(cb_quantized_blocks, chroma_spans, chroma_max_coeff_span, bank_coeff_config);
+    if (!cb_banked_coeff_payload) {
+        return std::unexpected(cb_banked_coeff_payload.error());
+    }
+    auto cr_banked_coeff_payload = encode_lossy_plane_payload(cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, bank_coeff_config);
+    if (!cr_banked_coeff_payload) {
+        return std::unexpected(cr_banked_coeff_payload.error());
+    }
+    Result<std::vector<uint8_t>> alpha_banked_coeff_payload = std::vector<uint8_t>{};
+    if (has_alpha) {
+        alpha_banked_coeff_payload = encode_lossy_plane_payload(a_quantized_blocks, alpha_spans, alpha_max_coeff_span, bank_coeff_config);
+        if (!alpha_banked_coeff_payload) {
+            return std::unexpected(alpha_banked_coeff_payload.error());
+        }
+    }
+    auto shared_banked_chroma_payload = encode_lossy_chroma_payload(
+        cb_quantized_blocks, cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, bank_coeff_config);
+    if (!shared_banked_chroma_payload) {
+        return std::unexpected(shared_banked_chroma_payload.error());
+    }
+
+    const bool banked_use_shared_chroma_coeff_tables =
+        shared_banked_chroma_payload->size() <
+        cb_banked_coeff_payload->size() + cr_banked_coeff_payload->size();
+    const size_t banked_chroma_coeff_payload_bytes = banked_use_shared_chroma_coeff_tables
+        ? shared_banked_chroma_payload->size()
+        : (cb_banked_coeff_payload->size() + cr_banked_coeff_payload->size());
+    const size_t banked_coeff_payload_bytes =
+        y_banked_coeff_payload->size() +
+        banked_chroma_coeff_payload_bytes +
+        (has_alpha ? alpha_banked_coeff_payload->size() : 0u) +
+        1u;
+    const bool use_coefficient_table_bank = banked_coeff_payload_bytes < base_coeff_payload_bytes;
+    const size_t selected_coeff_payload_bytes = use_coefficient_table_bank
+        ? banked_coeff_payload_bytes
+        : base_coeff_payload_bytes;
+
+    LossyCoeffStreamConfig elided_coeff_config = selected_coeff_config;
+    elided_coeff_config.use_table_bank = use_coefficient_table_bank;
+    elided_coeff_config.elide_single_symbol_streams = true;
+
+    auto y_elided_coeff_payload = encode_lossy_plane_payload(y_quantized_blocks, y_spans, y_max_coeff_span, elided_coeff_config);
+    if (!y_elided_coeff_payload) {
+        return std::unexpected(y_elided_coeff_payload.error());
+    }
+    auto cb_elided_coeff_payload = encode_lossy_plane_payload(cb_quantized_blocks, chroma_spans, chroma_max_coeff_span, elided_coeff_config);
+    if (!cb_elided_coeff_payload) {
+        return std::unexpected(cb_elided_coeff_payload.error());
+    }
+    auto cr_elided_coeff_payload = encode_lossy_plane_payload(cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, elided_coeff_config);
+    if (!cr_elided_coeff_payload) {
+        return std::unexpected(cr_elided_coeff_payload.error());
+    }
+    Result<std::vector<uint8_t>> alpha_elided_coeff_payload = std::vector<uint8_t>{};
+    if (has_alpha) {
+        alpha_elided_coeff_payload = encode_lossy_plane_payload(a_quantized_blocks, alpha_spans, alpha_max_coeff_span, elided_coeff_config);
+        if (!alpha_elided_coeff_payload) {
+            return std::unexpected(alpha_elided_coeff_payload.error());
+        }
+    }
+    auto shared_elided_chroma_payload = encode_lossy_chroma_payload(
+        cb_quantized_blocks, cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, elided_coeff_config);
+    if (!shared_elided_chroma_payload) {
+        return std::unexpected(shared_elided_chroma_payload.error());
+    }
+    const bool elided_use_shared_chroma_coeff_tables =
+        shared_elided_chroma_payload->size() <
+        cb_elided_coeff_payload->size() + cr_elided_coeff_payload->size();
+    const size_t elided_chroma_coeff_payload_bytes = elided_use_shared_chroma_coeff_tables
+        ? shared_elided_chroma_payload->size()
+        : (cb_elided_coeff_payload->size() + cr_elided_coeff_payload->size());
+    const size_t elided_coeff_payload_bytes =
+        y_elided_coeff_payload->size() +
+        elided_chroma_coeff_payload_bytes +
+        (has_alpha ? alpha_elided_coeff_payload->size() : 0u) +
+        1u;
+    const bool use_elide_single_symbol_streams =
+        elided_coeff_payload_bytes < selected_coeff_payload_bytes;
+
+    const bool use_shared_chroma_coeff_tables = use_elide_single_symbol_streams
+        ? elided_use_shared_chroma_coeff_tables
+        : (use_coefficient_table_bank ? banked_use_shared_chroma_coeff_tables
+                                      : base_use_shared_chroma_coeff_tables);
+    const auto& final_y_coeff_payload = use_elide_single_symbol_streams
+        ? *y_elided_coeff_payload
+        : (use_coefficient_table_bank ? *y_banked_coeff_payload
+                                      : selected_y_coeff_payload);
+    const auto& final_alpha_coeff_payload = use_elide_single_symbol_streams
+        ? *alpha_elided_coeff_payload
+        : (use_coefficient_table_bank ? *alpha_banked_coeff_payload
+                                      : selected_alpha_coeff_payload);
+    const auto& final_independent_cb_payload = use_elide_single_symbol_streams
+        ? *cb_elided_coeff_payload
+        : (use_coefficient_table_bank ? *cb_banked_coeff_payload
+                                      : selected_independent_cb_payload);
+    const auto& final_independent_cr_payload = use_elide_single_symbol_streams
+        ? *cr_elided_coeff_payload
+        : (use_coefficient_table_bank ? *cr_banked_coeff_payload
+                                      : selected_independent_cr_payload);
+    const auto& final_shared_chroma_payload = use_elide_single_symbol_streams
+        ? *shared_elided_chroma_payload
+        : (use_coefficient_table_bank ? *shared_banked_chroma_payload
+                                      : selected_shared_chroma_payload);
+
+    if (use_adaptive_span_streams || use_split_magnitude_signs || use_shared_chroma_coeff_tables || use_coefficient_table_bank || use_elide_single_symbol_streams) {
         uint8_t syntax_flags = 0;
         if (use_adaptive_span_streams) {
             syntax_flags |= kLossyTileSyntaxFlagAdaptiveSpanStreams;
@@ -995,6 +1119,12 @@ static Result<TileEncodeResult> encode_lossy_tile(
         }
         if (use_shared_chroma_coeff_tables) {
             syntax_flags |= kLossyTileSyntaxFlagSharedChromaCoeffTables;
+        }
+        if (use_coefficient_table_bank) {
+            syntax_flags |= kLossyTileSyntaxFlagCoefficientTableBank;
+        }
+        if (use_elide_single_symbol_streams) {
+            syntax_flags |= kLossyTileSyntaxFlagElideSingleSymbolStreams;
         }
         tile_writer.write_u32(kLossyTileLayoutTagV6);
         tile_writer.write_u8(syntax_flags);
@@ -1042,12 +1172,12 @@ static Result<TileEncodeResult> encode_lossy_tile(
         tile_writer.write_u8(chroma_max_coeff_span);
     }
 
-    tile_writer.write_bytes(selected_y_coeff_payload);
+    tile_writer.write_bytes(final_y_coeff_payload);
     if (use_shared_chroma_coeff_tables) {
-        tile_writer.write_bytes(selected_shared_chroma_payload);
+        tile_writer.write_bytes(final_shared_chroma_payload);
     } else {
-        tile_writer.write_bytes(selected_independent_cb_payload);
-        tile_writer.write_bytes(selected_independent_cr_payload);
+        tile_writer.write_bytes(final_independent_cb_payload);
+        tile_writer.write_bytes(final_independent_cr_payload);
     }
 
     if (has_alpha) {
@@ -1065,7 +1195,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
         if (use_plane_max_coeff_spans) {
             tile_writer.write_u8(alpha_max_coeff_span);
         }
-        tile_writer.write_bytes(selected_alpha_coeff_payload);
+        tile_writer.write_bytes(final_alpha_coeff_payload);
     }
 
     float score = compute_quality_score(tile_y_data.data(), reconstructed_y.data(), tw, th, max_val);

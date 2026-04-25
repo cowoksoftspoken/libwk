@@ -9,6 +9,8 @@ struct LossyCoeffStreamConfig {
     bool use_plane_max_coeff_span = false;
     bool adaptive_coefficient_tables = true;
     bool split_magnitude_signs = false;
+    bool use_table_bank = false;
+    bool elide_single_symbol_streams = false;
 };
 
 struct DecodedLossyChromaPayload {

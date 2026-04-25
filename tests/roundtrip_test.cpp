@@ -2,9 +2,11 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <wk/wk.hpp>
 #include "../src/common.h"
 #include "../src/coeff_sign_stream.h"
+#include "../src/coeff_table_bank_stream.h"
 #include "../src/container.h"
 #include "../src/coeff_span_stream.h"
 #include "../src/coeff_table_stream.h"
@@ -122,6 +124,8 @@ struct LossyTileSyntaxInfo {
     bool plane_extents = false;
     bool split_magnitude_signs = false;
     bool shared_chroma_tables = false;
+    bool coefficient_table_bank = false;
+    bool elide_single_symbol_streams = false;
 };
 
 Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> payload) {
@@ -145,6 +149,10 @@ Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> pay
             (info.syntax_flags & kLossyTileSyntaxFlagSplitMagnitudeSigns) != 0;
         info.shared_chroma_tables =
             (info.syntax_flags & kLossyTileSyntaxFlagSharedChromaCoeffTables) != 0;
+        info.coefficient_table_bank =
+            (info.syntax_flags & kLossyTileSyntaxFlagCoefficientTableBank) != 0;
+        info.elide_single_symbol_streams =
+            (info.syntax_flags & kLossyTileSyntaxFlagElideSingleSymbolStreams) != 0;
     } else if (info.layout_tag == kLossyTileLayoutTagV5) {
         info.plane_extents = true;
     }
@@ -171,6 +179,25 @@ size_t encoded_coefficient_span_stream_bytes(std::span<const uint8_t> payload,
     default:
         return sizeof(uint16_t);
     }
+}
+
+[[nodiscard]] std::optional<int> single_symbol_table_value(const LossyCoeffTable& table,
+                                                           int num_symbols) {
+    int symbol_index = -1;
+    for (int symbol = 0; symbol < num_symbols; ++symbol) {
+        const uint16_t freq = table.symbol(symbol).freq;
+        if (freq == 0) {
+            continue;
+        }
+        if (freq != LossyCoeffTable::TABLE_SIZE || symbol_index >= 0) {
+            return std::nullopt;
+        }
+        symbol_index = symbol;
+    }
+    if (symbol_index < 0) {
+        return std::nullopt;
+    }
+    return symbol_index;
 }
 
 }
@@ -536,42 +563,86 @@ TEST(RoundtripTest, CoefficientSignCorruptionRejected) {
         : read_packed_coefficient_spans(reader, chroma_blocks, "chroma");
     ASSERT_TRUE(chroma_spans.has_value()) << chroma_spans.error().message;
 
+    uint8_t y_extent = 64;
     if (syntax->plane_extents) {
-        auto y_extent = reader.read_u8();
+        auto y_extent_read = reader.read_u8();
         auto chroma_extent = reader.read_u8();
-        ASSERT_TRUE(y_extent.has_value()) << y_extent.error().message;
+        ASSERT_TRUE(y_extent_read.has_value()) << y_extent_read.error().message;
         ASSERT_TRUE(chroma_extent.has_value()) << chroma_extent.error().message;
+        y_extent = *y_extent_read;
     }
 
-    auto table = read_coefficient_table(reader, 1025, "lossy");
-    ASSERT_TRUE(table.has_value()) << table.error().message;
-
-    auto encoded_size = reader.read_u32();
-    ASSERT_TRUE(encoded_size.has_value()) << encoded_size.error().message;
-    auto encoded_bytes = reader.read_bytes(*encoded_size);
-    ASSERT_TRUE(encoded_bytes.has_value()) << encoded_bytes.error().message;
-
-    RansDecoder<RANS_PRECISION_BITS> decoder;
-    decoder.init(encoded_bytes->data(), encoded_bytes->size());
-    ASSERT_TRUE(decoder.ok());
-
-    size_t nonzero_count = 0;
-    for (size_t block_index = 0; block_index < y_blocks; ++block_index) {
-        if ((*y_spans)[block_index] == 0) {
+    std::vector<LossyCoeffTable> y_tables;
+    if (syntax->coefficient_table_bank) {
+        auto tables = read_coefficient_table_bank(reader, y_extent, 1025, "lossy");
+        ASSERT_TRUE(tables.has_value()) << tables.error().message;
+        ASSERT_FALSE(tables->empty());
+        y_tables = std::move(*tables);
+    } else {
+        y_tables.reserve(y_extent);
+    }
+    bool corrupted = false;
+    for (size_t coeff_index = 0; coeff_index < y_extent; ++coeff_index) {
+        const size_t active_blocks = std::count_if(
+            y_spans->begin(), y_spans->end(),
+            [&](uint8_t span_value) { return span_value > coeff_index; });
+        if (active_blocks == 0) {
             continue;
         }
-        const int symbol = decoder.decode(*table);
-        ASSERT_TRUE(decoder.ok());
-        nonzero_count += symbol != 0 ? 1u : 0u;
+
+        LossyCoeffTable table;
+        if (syntax->coefficient_table_bank) {
+            table = y_tables[coeff_index];
+        } else {
+            auto table_read = read_coefficient_table(reader, 1025, "lossy");
+            ASSERT_TRUE(table_read.has_value()) << table_read.error().message;
+            table = std::move(*table_read);
+        }
+
+        size_t nonzero_count = 0;
+        const auto single_symbol = syntax->elide_single_symbol_streams
+            ? single_symbol_table_value(table, 1025)
+            : std::nullopt;
+        if (single_symbol.has_value()) {
+            nonzero_count = *single_symbol != 0 ? active_blocks : 0u;
+        } else {
+            auto encoded_size = reader.read_u32();
+            ASSERT_TRUE(encoded_size.has_value()) << encoded_size.error().message;
+            auto encoded_bytes = reader.read_bytes(*encoded_size);
+            ASSERT_TRUE(encoded_bytes.has_value()) << encoded_bytes.error().message;
+
+            RansDecoder<RANS_PRECISION_BITS> decoder;
+            decoder.init(encoded_bytes->data(), encoded_bytes->size());
+            ASSERT_TRUE(decoder.ok());
+
+            for (size_t block_index = 0; block_index < y_blocks; ++block_index) {
+                if ((*y_spans)[block_index] <= coeff_index) {
+                    continue;
+                }
+                const int symbol = decoder.decode(table);
+                ASSERT_TRUE(decoder.ok());
+                nonzero_count += symbol != 0 ? 1u : 0u;
+            }
+        }
+
+        if (nonzero_count == 0) {
+            continue;
+        }
+
+        const size_t sign_offset = syntax->stream_offset + reader.position();
+        const size_t sign_bytes = packed_coefficient_sign_bytes(nonzero_count);
+        ASSERT_GT(payload.size(), sign_offset + sign_bytes - 1);
+        if (nonzero_count % 8u != 0u) {
+            payload[sign_offset + sign_bytes - 1] |= 0x80;
+            corrupted = true;
+            break;
+        }
+
+        auto sign_bits = read_packed_coefficient_signs(reader, nonzero_count, "lossy");
+        ASSERT_TRUE(sign_bits.has_value()) << sign_bits.error().message;
     }
 
-    ASSERT_GT(nonzero_count, 0u);
-    ASSERT_NE(nonzero_count % 8u, 0u);
-
-    const size_t sign_offset = syntax->stream_offset + reader.position();
-    const size_t sign_bytes = packed_coefficient_sign_bytes(nonzero_count);
-    ASSERT_GT(payload.size(), sign_offset + sign_bytes - 1);
-    payload[sign_offset + sign_bytes - 1] |= 0x80;
+    ASSERT_TRUE(corrupted);
 
     auto broken = write_container(*file);
     ASSERT_TRUE(broken.has_value()) << broken.error().message;
