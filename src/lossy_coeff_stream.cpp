@@ -1,9 +1,11 @@
 #include "lossy_coeff_stream.h"
 
+#include "coeff_presence_stream.h"
 #include "coeff_table_bank_stream.h"
 #include "coeff_sign_stream.h"
 #include "coeff_table_stream.h"
 #include "rans.h"
+#include <algorithm>
 #include <cmath>
 #include <optional>
 
@@ -35,8 +37,17 @@ struct SymbolCoding {
 };
 
 struct EncodedCoeffContextStream {
+    std::vector<uint8_t> presence_bytes;
     std::vector<uint8_t> rans_bytes;
     std::vector<uint8_t> sign_bits;
+    size_t active_blocks = 0;
+    size_t nonzero_count = 0;
+};
+
+struct CoeffContextAnalysis {
+    std::vector<uint8_t> presence;
+    size_t active_blocks = 0;
+    size_t nonzero_count = 0;
 };
 
 [[nodiscard]] SymbolCoding make_symbol_coding(const LossyCoeffStreamConfig& config) {
@@ -56,6 +67,30 @@ struct EncodedCoeffContextStream {
         active += span_value > coeff_index ? 1u : 0u;
     }
     return active;
+}
+
+[[nodiscard]] CoeffContextAnalysis analyze_coeff_context(std::span<const DctBlockI16> blocks,
+                                                         std::span<const uint8_t> spans,
+                                                         int coeff_index,
+                                                         bool keep_presence) {
+    CoeffContextAnalysis analysis;
+    if (keep_presence) {
+        analysis.presence.reserve(blocks.size());
+    }
+
+    for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+        if (spans[block_index] <= coeff_index) {
+            continue;
+        }
+        const bool nonzero = blocks[block_index][coeff_index] != 0;
+        if (keep_presence) {
+            analysis.presence.push_back(static_cast<uint8_t>(nonzero));
+        }
+        ++analysis.active_blocks;
+        analysis.nonzero_count += nonzero ? 1u : 0u;
+    }
+
+    return analysis;
 }
 
 [[nodiscard]] LossyCoeffTable make_single_symbol_table(const SymbolCoding& coding) {
@@ -127,10 +162,27 @@ struct EncodedCoeffContextStream {
     std::span<const DctBlockI16> blocks,
     std::span<const uint8_t> spans,
     int coeff_index,
+    const CoeffContextAnalysis& analysis,
     const LossyCoeffTable& table,
     const SymbolCoding& coding,
     const LossyCoeffStreamConfig& config) {
     EncodedCoeffContextStream stream;
+    stream.active_blocks = analysis.active_blocks;
+    stream.nonzero_count = config.use_significance_maps ? analysis.nonzero_count : analysis.active_blocks;
+
+    if (config.use_significance_maps && analysis.active_blocks > 0) {
+        ByteWriter presence_writer;
+        auto written = write_adaptive_coefficient_presence(presence_writer, analysis.presence);
+        if (!written) {
+            return std::unexpected(written.error());
+        }
+        stream.presence_bytes = presence_writer.finish();
+    }
+
+    if (stream.nonzero_count == 0) {
+        return stream;
+    }
+
     const bool elide_rans_stream = config.elide_single_symbol_streams &&
         single_symbol_from_table(table, coding.num_symbols).has_value();
 
@@ -144,6 +196,9 @@ struct EncodedCoeffContextStream {
                 continue;
             }
             const int value = static_cast<int>(blocks[block_index][coeff_index]);
+            if (config.use_significance_maps && value == 0) {
+                continue;
+            }
             encoder.encode(table, coding.encode(value));
         }
         stream.rans_bytes = encoder.finish();
@@ -176,10 +231,19 @@ struct EncodedCoeffContextStream {
     const EncodedCoeffContextStream& stream,
     const LossyCoeffTable& table,
     const SymbolCoding& coding,
-    size_t active_blocks,
     const LossyCoeffStreamConfig& config) {
+    if (config.use_significance_maps && stream.active_blocks > 0) {
+        writer.write_bytes(stream.presence_bytes);
+    }
+    if (stream.nonzero_count == 0) {
+        if (!config.use_significance_maps) {
+            writer.write_u32(0);
+        }
+        return {};
+    }
+
     const bool elide_rans_stream = config.elide_single_symbol_streams &&
-        active_blocks > 0 &&
+        stream.nonzero_count > 0 &&
         single_symbol_from_table(table, coding.num_symbols).has_value();
     if (!elide_rans_stream) {
         writer.write_u32(static_cast<uint32_t>(stream.rans_bytes.size()));
@@ -195,27 +259,39 @@ struct EncodedCoeffContextStream {
     int coeff_index,
     const SymbolCoding& coding,
     int symbol,
+    std::span<const uint8_t> presence,
     std::span<DctBlockI16> blocks,
     std::string_view label) {
     const int16_t value = coding.decode(symbol);
-    size_t active_blocks = 0;
+    size_t present_blocks = 0;
+    size_t presence_index = 0;
     for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
         if (spans[block_index] <= coeff_index) {
             continue;
         }
+        const bool is_present = presence.empty() || presence[presence_index++] != 0;
+        if (!is_present) {
+            blocks[block_index][coeff_index] = 0;
+            continue;
+        }
         blocks[block_index][coeff_index] = value;
-        ++active_blocks;
+        ++present_blocks;
     }
 
     if (coding.split_magnitude_signs && value != 0) {
-        auto sign_bits = read_packed_coefficient_signs(reader, active_blocks, label);
+        auto sign_bits = read_packed_coefficient_signs(reader, present_blocks, label);
         if (!sign_bits) {
             return std::unexpected(sign_bits.error());
         }
 
         size_t sign_index = 0;
+        presence_index = 0;
         for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
             if (spans[block_index] <= coeff_index) {
+                continue;
+            }
+            const bool is_present = presence.empty() || presence[presence_index++] != 0;
+            if (!is_present) {
                 continue;
             }
             if ((*sign_bits)[sign_index++] != 0) {
@@ -224,7 +300,7 @@ struct EncodedCoeffContextStream {
         }
     }
 
-    return active_blocks;
+    return present_blocks;
 }
 
 [[nodiscard]] Result<EncodedCoeffContextStream> read_coeff_context_stream(
@@ -238,27 +314,46 @@ struct EncodedCoeffContextStream {
     const LossyCoeffStreamConfig& config) {
     EncodedCoeffContextStream stream;
     const size_t active_blocks = count_active_blocks(spans, coeff_index);
+    stream.active_blocks = active_blocks;
 
     if (active_blocks == 0) {
-        auto encoded_size = reader.read_u32();
-        if (!encoded_size) {
-            return std::unexpected(encoded_size.error());
-        }
-        if (*encoded_size != 0) {
-            return std::unexpected(Error{ErrorCode::RansError,
-                                         "unexpected data for empty coefficient stream"});
+        if (!config.use_significance_maps) {
+            auto encoded_size = reader.read_u32();
+            if (!encoded_size) {
+                return std::unexpected(encoded_size.error());
+            }
+            if (*encoded_size != 0) {
+                return std::unexpected(Error{ErrorCode::RansError,
+                                             "unexpected data for empty coefficient stream"});
+            }
         }
         return stream;
+    }
+
+    std::vector<uint8_t> presence;
+    if (config.use_significance_maps) {
+        auto presence_read = read_adaptive_coefficient_presence(reader, active_blocks, label);
+        if (!presence_read) {
+            return std::unexpected(presence_read.error());
+        }
+        presence = std::move(*presence_read);
+        stream.nonzero_count = std::count(presence.begin(), presence.end(), static_cast<uint8_t>(1));
+        if (stream.nonzero_count == 0) {
+            return stream;
+        }
+    } else {
+        stream.nonzero_count = active_blocks;
     }
 
     if (config.elide_single_symbol_streams) {
         auto symbol = single_symbol_from_table(table, coding.num_symbols);
         if (symbol) {
             auto decoded = decode_elided_single_symbol_stream(reader, spans, coeff_index, coding,
-                                                              *symbol, blocks, label);
+                                                              *symbol, presence, blocks, label);
             if (!decoded) {
                 return std::unexpected(decoded.error());
             }
+            stream.nonzero_count = *decoded;
             return stream;
         }
     }
@@ -279,8 +374,13 @@ struct EncodedCoeffContextStream {
     }
 
     size_t nonzero_count = 0;
+    size_t presence_index = 0;
     for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
         if (spans[block_index] <= coeff_index) {
+            continue;
+        }
+        if (!presence.empty() && presence[presence_index++] == 0) {
+            blocks[block_index][coeff_index] = 0;
             continue;
         }
         const int symbol = decoder.decode(table);
@@ -298,8 +398,12 @@ struct EncodedCoeffContextStream {
         }
 
         size_t sign_index = 0;
+        presence_index = 0;
         for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
             if (spans[block_index] <= coeff_index) {
+                continue;
+            }
+            if (!presence.empty() && presence[presence_index++] == 0) {
                 continue;
             }
             auto& value = blocks[block_index][coeff_index];
@@ -353,13 +457,17 @@ struct EncodedCoeffContextStream {
     std::span<const DctBlockI16> blocks,
     std::span<const uint8_t> spans,
     int coeff_index,
-    const SymbolCoding& coding) {
+    const SymbolCoding& coding,
+    bool skip_zeros) {
     std::vector<uint32_t> counts(static_cast<size_t>(coding.num_symbols), 0);
     for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
         if (spans[block_index] <= coeff_index) {
             continue;
         }
         const int value = static_cast<int>(blocks[block_index][coeff_index]);
+        if (skip_zeros && value == 0) {
+            continue;
+        }
         counts[static_cast<size_t>(coding.encode(value))]++;
     }
     return counts;
@@ -370,14 +478,21 @@ struct EncodedCoeffContextStream {
     std::span<const DctBlockI16> cr_blocks,
     std::span<const uint8_t> spans,
     int coeff_index,
-    const SymbolCoding& coding) {
+    const SymbolCoding& coding,
+    bool skip_zeros) {
     std::vector<uint32_t> counts(static_cast<size_t>(coding.num_symbols), 0);
     for (size_t block_index = 0; block_index < cb_blocks.size(); ++block_index) {
         if (spans[block_index] <= coeff_index) {
             continue;
         }
-        counts[static_cast<size_t>(coding.encode(static_cast<int>(cb_blocks[block_index][coeff_index])))]++;
-        counts[static_cast<size_t>(coding.encode(static_cast<int>(cr_blocks[block_index][coeff_index])))]++;
+        const int cb_value = static_cast<int>(cb_blocks[block_index][coeff_index]);
+        const int cr_value = static_cast<int>(cr_blocks[block_index][coeff_index]);
+        if (!skip_zeros || cb_value != 0) {
+            counts[static_cast<size_t>(coding.encode(cb_value))]++;
+        }
+        if (!skip_zeros || cr_value != 0) {
+            counts[static_cast<size_t>(coding.encode(cr_value))]++;
+        }
     }
     return counts;
 }
@@ -407,17 +522,24 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
     streams.reserve(static_cast<size_t>(coeff_limit));
 
     for (int coeff_index = 0; coeff_index < coeff_limit; ++coeff_index) {
-        const size_t active_blocks = count_active_blocks(spans, coeff_index);
-        if (active_blocks == 0) {
+        const CoeffContextAnalysis analysis =
+            analyze_coeff_context(blocks, spans, coeff_index, config.use_significance_maps);
+        if (analysis.active_blocks == 0) {
             tables.push_back(make_single_symbol_table(coding));
-            streams.push_back(EncodedCoeffContextStream{});
+            EncodedCoeffContextStream empty_stream;
+            streams.push_back(std::move(empty_stream));
             continue;
         }
 
-        auto counts = build_plane_counts(blocks, spans, coeff_index, coding);
+        auto counts = build_plane_counts(blocks, spans, coeff_index, coding, config.use_significance_maps);
         LossyCoeffTable table;
-        table.build_from_counts(counts.data(), coding.num_symbols);
-        auto encoded_stream = encode_coeff_context_stream(blocks, spans, coeff_index, table, coding, config);
+        if (config.use_significance_maps && analysis.nonzero_count == 0) {
+            table = make_single_symbol_table(coding);
+        } else {
+            table.build_from_counts(counts.data(), coding.num_symbols);
+        }
+        auto encoded_stream = encode_coeff_context_stream(blocks, spans, coeff_index, analysis,
+                                                          table, coding, config);
         if (!encoded_stream) {
             return std::unexpected(encoded_stream.error());
         }
@@ -439,10 +561,8 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
                 return std::unexpected(table_result.error());
             }
         }
-        const size_t active_blocks = count_active_blocks(spans, static_cast<int>(context_index));
         auto write_result = write_coeff_context_stream(writer, streams[context_index],
-                                                       tables[context_index], coding,
-                                                       active_blocks, config);
+                                                       tables[context_index], coding, config);
         if (!write_result) {
             return std::unexpected(write_result.error());
         }
@@ -477,22 +597,34 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
     cr_streams.reserve(static_cast<size_t>(coeff_limit));
 
     for (int coeff_index = 0; coeff_index < coeff_limit; ++coeff_index) {
-        const size_t active_blocks = count_active_blocks(spans, coeff_index);
-        if (active_blocks == 0) {
+        const CoeffContextAnalysis cb_analysis =
+            analyze_coeff_context(cb_blocks, spans, coeff_index, config.use_significance_maps);
+        const CoeffContextAnalysis cr_analysis =
+            analyze_coeff_context(cr_blocks, spans, coeff_index, config.use_significance_maps);
+        if (cb_analysis.active_blocks == 0) {
             tables.push_back(make_single_symbol_table(coding));
-            cb_streams.push_back(EncodedCoeffContextStream{});
-            cr_streams.push_back(EncodedCoeffContextStream{});
+            EncodedCoeffContextStream empty_stream;
+            cb_streams.push_back(empty_stream);
+            cr_streams.push_back(std::move(empty_stream));
             continue;
         }
 
-        auto counts = build_chroma_counts(cb_blocks, cr_blocks, spans, coeff_index, coding);
+        auto counts = build_chroma_counts(cb_blocks, cr_blocks, spans, coeff_index, coding,
+                                          config.use_significance_maps);
         LossyCoeffTable table;
-        table.build_from_counts(counts.data(), coding.num_symbols);
-        auto cb_stream = encode_coeff_context_stream(cb_blocks, spans, coeff_index, table, coding, config);
+        if (config.use_significance_maps &&
+            cb_analysis.nonzero_count + cr_analysis.nonzero_count == 0) {
+            table = make_single_symbol_table(coding);
+        } else {
+            table.build_from_counts(counts.data(), coding.num_symbols);
+        }
+        auto cb_stream = encode_coeff_context_stream(cb_blocks, spans, coeff_index, cb_analysis,
+                                                     table, coding, config);
         if (!cb_stream) {
             return std::unexpected(cb_stream.error());
         }
-        auto cr_stream = encode_coeff_context_stream(cr_blocks, spans, coeff_index, table, coding, config);
+        auto cr_stream = encode_coeff_context_stream(cr_blocks, spans, coeff_index, cr_analysis,
+                                                     table, coding, config);
         if (!cr_stream) {
             return std::unexpected(cr_stream.error());
         }
@@ -515,16 +647,13 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
                 return std::unexpected(table_result.error());
             }
         }
-        const size_t active_blocks = count_active_blocks(spans, static_cast<int>(context_index));
         auto write_cb = write_coeff_context_stream(writer, cb_streams[context_index],
-                                                   tables[context_index], coding,
-                                                   active_blocks, config);
+                                                   tables[context_index], coding, config);
         if (!write_cb) {
             return std::unexpected(write_cb.error());
         }
         auto write_cr = write_coeff_context_stream(writer, cr_streams[context_index],
-                                                   tables[context_index], coding,
-                                                   active_blocks, config);
+                                                   tables[context_index], coding, config);
         if (!write_cr) {
             return std::unexpected(write_cr.error());
         }

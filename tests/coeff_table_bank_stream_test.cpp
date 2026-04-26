@@ -78,7 +78,7 @@ TEST(CoeffTableBankStreamTest, ChoosesSingleTableModeForRepeatedTables) {
     expect_tables_equal(*parsed, tables);
 }
 
-TEST(CoeffTableBankStreamTest, ChoosesPackedNibbleModeForSmallBanks) {
+TEST(CoeffTableBankStreamTest, ChoosesPackedBitModeForBinaryBanks) {
     const std::array<LossyCoeffTable, 8> tables = {
         make_table({{3, 1}}),
         make_table({{8, 3}, {9, 5}, {10, 9}, {11, 4}}),
@@ -89,6 +89,62 @@ TEST(CoeffTableBankStreamTest, ChoosesPackedNibbleModeForSmallBanks) {
         make_table({{3, 1}}),
         make_table({{8, 3}, {9, 5}, {10, 9}, {11, 4}})
     };
+
+    ByteWriter writer;
+    auto written = write_coefficient_table_bank(writer, tables, kNumSymbols);
+    ASSERT_TRUE(written.has_value()) << written.error().message;
+
+    const auto bytes = writer.finish();
+    ASSERT_FALSE(bytes.empty());
+    EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableBankMode::PackedBitIndices));
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table_bank(reader, tables.size(), kNumSymbols, "unit");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+    expect_tables_equal(*parsed, tables);
+}
+
+TEST(CoeffTableBankStreamTest, ChoosesPackedTwoBitModeForFourEntryBanks) {
+    const std::array<LossyCoeffTable, 12> tables = {
+        make_table({{1, 1}}),
+        make_table({{2, 1}}),
+        make_table({{3, 1}}),
+        make_table({{4, 1}}),
+        make_table({{1, 1}}),
+        make_table({{2, 1}}),
+        make_table({{3, 1}}),
+        make_table({{4, 1}}),
+        make_table({{1, 1}}),
+        make_table({{2, 1}}),
+        make_table({{3, 1}}),
+        make_table({{4, 1}})
+    };
+
+    ByteWriter writer;
+    auto written = write_coefficient_table_bank(writer, tables, kNumSymbols);
+    ASSERT_TRUE(written.has_value()) << written.error().message;
+
+    const auto bytes = writer.finish();
+    ASSERT_FALSE(bytes.empty());
+    EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableBankMode::PackedTwoBitIndices));
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table_bank(reader, tables.size(), kNumSymbols, "unit");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+    expect_tables_equal(*parsed, tables);
+}
+
+TEST(CoeffTableBankStreamTest, ChoosesPackedNibbleModeForSmallBanks) {
+    std::vector<LossyCoeffTable> unique_tables;
+    unique_tables.reserve(8);
+    for (int index = 0; index < 8; ++index) {
+        unique_tables.push_back(make_table({{index, 1}}));
+    }
+
+    std::vector<LossyCoeffTable> tables;
+    tables.reserve(16);
+    tables.insert(tables.end(), unique_tables.begin(), unique_tables.end());
+    tables.insert(tables.end(), unique_tables.begin(), unique_tables.end());
 
     ByteWriter writer;
     auto written = write_coefficient_table_bank(writer, tables, kNumSymbols);
@@ -130,7 +186,23 @@ TEST(CoeffTableBankStreamTest, ChoosesRawByteModeForLargeBanks) {
     expect_tables_equal(*parsed, tables);
 }
 
-TEST(CoeffTableBankStreamTest, RejectsNonZeroNibblePadding) {
+TEST(CoeffTableBankStreamTest, RejectsNonZeroPackedBitPadding) {
+    ByteWriter writer;
+    writer.write_u8(static_cast<uint8_t>(CoeffTableBankMode::PackedBitIndices));
+    writer.write_u8(1);
+    auto single = make_table({{3, 1}});
+    auto table_result = write_coefficient_table(writer, single, kNumSymbols);
+    ASSERT_TRUE(table_result.has_value()) << table_result.error().message;
+    writer.write_u8(0xFE);
+    const auto bytes = writer.finish();
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table_bank(reader, 1, kNumSymbols, "unit");
+    EXPECT_FALSE(parsed.has_value());
+    EXPECT_EQ(parsed.error().code, ErrorCode::RansError);
+}
+
+TEST(CoeffTableBankStreamTest, RejectsNonZeroPackedNibblePadding) {
     ByteWriter writer;
     writer.write_u8(static_cast<uint8_t>(CoeffTableBankMode::PackedNibbleIndices));
     writer.write_u8(1);

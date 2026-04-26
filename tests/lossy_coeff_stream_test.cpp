@@ -52,6 +52,21 @@ TEST(LossyCoeffStreamTest, PlanePayloadRoundTripsAcrossTableModes) {
              LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = true,
+                                    .use_significance_maps = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = true,
+                                    .use_table_bank = true,
+                                    .use_significance_maps = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = true,
+                                    .use_table_bank = true,
+                                    .elide_single_symbol_streams = true,
+                                    .use_significance_maps = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = true,
                                     .use_table_bank = true},
          }) {
         auto payload = encode_lossy_plane_payload(blocks, spans, 4, config);
@@ -92,6 +107,21 @@ TEST(LossyCoeffStreamTest, SharedChromaPayloadRoundTripsAcrossTableModes) {
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = false,
                                     .use_table_bank = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = true,
+                                    .use_significance_maps = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = true,
+                                    .use_table_bank = true,
+                                    .use_significance_maps = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = true,
+                                    .use_table_bank = true,
+                                    .elide_single_symbol_streams = true,
+                                    .use_significance_maps = true},
              LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = true,
@@ -178,6 +208,48 @@ TEST(LossyCoeffStreamTest, SingleSymbolStreamElisionShrinksSplitMagnitudePayload
 
     ByteReader reader(*elided_payload);
     auto decoded = decode_lossy_plane_payload(reader, spans, 2, elided_config);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+    expect_blocks_equal(*decoded, blocks);
+}
+
+TEST(LossyCoeffStreamTest, SignificanceMapsShrinkSparseSplitPayload) {
+    const std::array<DctBlockI16, 8> blocks = {
+        make_block({{0, 12}, {1, 2}, {2, 1}}),
+        make_block({{0, 11}}),
+        make_block({{0, -12}, {2, -1}}),
+        make_block({{0, 10}}),
+        make_block({{0, -11}, {1, -2}}),
+        make_block({{0, 9}}),
+        make_block({{0, 8}, {2, 1}}),
+        make_block({{0, -8}})
+    };
+    const std::array<uint8_t, 8> spans = {3, 3, 3, 3, 3, 3, 3, 3};
+
+    const LossyCoeffStreamConfig base_config{
+        .use_plane_max_coeff_span = true,
+        .adaptive_coefficient_tables = true,
+        .split_magnitude_signs = true,
+        .use_table_bank = true,
+        .elide_single_symbol_streams = true,
+    };
+    const LossyCoeffStreamConfig significance_config{
+        .use_plane_max_coeff_span = true,
+        .adaptive_coefficient_tables = true,
+        .split_magnitude_signs = true,
+        .use_table_bank = true,
+        .elide_single_symbol_streams = true,
+        .use_significance_maps = true,
+    };
+
+    auto base_payload = encode_lossy_plane_payload(blocks, spans, 3, base_config);
+    ASSERT_TRUE(base_payload.has_value()) << base_payload.error().message;
+    auto significance_payload = encode_lossy_plane_payload(blocks, spans, 3, significance_config);
+    ASSERT_TRUE(significance_payload.has_value()) << significance_payload.error().message;
+
+    EXPECT_LT(significance_payload->size(), base_payload->size());
+
+    ByteReader reader(*significance_payload);
+    auto decoded = decode_lossy_plane_payload(reader, spans, 3, significance_config);
     ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
     expect_blocks_equal(*decoded, blocks);
 }

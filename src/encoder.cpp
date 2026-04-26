@@ -1081,32 +1081,102 @@ static Result<TileEncodeResult> encode_lossy_tile(
     const bool use_elide_single_symbol_streams =
         elided_coeff_payload_bytes < selected_coeff_payload_bytes;
 
-    const bool use_shared_chroma_coeff_tables = use_elide_single_symbol_streams
+    const bool current_use_shared_chroma_coeff_tables = use_elide_single_symbol_streams
         ? elided_use_shared_chroma_coeff_tables
         : (use_coefficient_table_bank ? banked_use_shared_chroma_coeff_tables
                                       : base_use_shared_chroma_coeff_tables);
-    const auto& final_y_coeff_payload = use_elide_single_symbol_streams
+    const auto& current_y_coeff_payload = use_elide_single_symbol_streams
         ? *y_elided_coeff_payload
         : (use_coefficient_table_bank ? *y_banked_coeff_payload
                                       : selected_y_coeff_payload);
-    const auto& final_alpha_coeff_payload = use_elide_single_symbol_streams
+    const auto& current_alpha_coeff_payload = use_elide_single_symbol_streams
         ? *alpha_elided_coeff_payload
         : (use_coefficient_table_bank ? *alpha_banked_coeff_payload
                                       : selected_alpha_coeff_payload);
-    const auto& final_independent_cb_payload = use_elide_single_symbol_streams
+    const auto& current_independent_cb_payload = use_elide_single_symbol_streams
         ? *cb_elided_coeff_payload
         : (use_coefficient_table_bank ? *cb_banked_coeff_payload
                                       : selected_independent_cb_payload);
-    const auto& final_independent_cr_payload = use_elide_single_symbol_streams
+    const auto& current_independent_cr_payload = use_elide_single_symbol_streams
         ? *cr_elided_coeff_payload
         : (use_coefficient_table_bank ? *cr_banked_coeff_payload
                                       : selected_independent_cr_payload);
-    const auto& final_shared_chroma_payload = use_elide_single_symbol_streams
+    const auto& current_shared_chroma_payload = use_elide_single_symbol_streams
         ? *shared_elided_chroma_payload
         : (use_coefficient_table_bank ? *shared_banked_chroma_payload
                                       : selected_shared_chroma_payload);
+    const size_t current_coeff_payload_bytes = use_elide_single_symbol_streams
+        ? elided_coeff_payload_bytes
+        : selected_coeff_payload_bytes;
 
-    if (use_adaptive_span_streams || use_split_magnitude_signs || use_shared_chroma_coeff_tables || use_coefficient_table_bank || use_elide_single_symbol_streams) {
+    LossyCoeffStreamConfig significance_coeff_config = selected_coeff_config;
+    significance_coeff_config.use_table_bank = use_coefficient_table_bank;
+    significance_coeff_config.elide_single_symbol_streams = use_elide_single_symbol_streams;
+    significance_coeff_config.use_significance_maps = true;
+
+    auto y_significance_coeff_payload = encode_lossy_plane_payload(
+        y_quantized_blocks, y_spans, y_max_coeff_span, significance_coeff_config);
+    if (!y_significance_coeff_payload) {
+        return std::unexpected(y_significance_coeff_payload.error());
+    }
+    auto cb_significance_coeff_payload = encode_lossy_plane_payload(
+        cb_quantized_blocks, chroma_spans, chroma_max_coeff_span, significance_coeff_config);
+    if (!cb_significance_coeff_payload) {
+        return std::unexpected(cb_significance_coeff_payload.error());
+    }
+    auto cr_significance_coeff_payload = encode_lossy_plane_payload(
+        cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, significance_coeff_config);
+    if (!cr_significance_coeff_payload) {
+        return std::unexpected(cr_significance_coeff_payload.error());
+    }
+    Result<std::vector<uint8_t>> alpha_significance_coeff_payload = std::vector<uint8_t>{};
+    if (has_alpha) {
+        alpha_significance_coeff_payload = encode_lossy_plane_payload(
+            a_quantized_blocks, alpha_spans, alpha_max_coeff_span, significance_coeff_config);
+        if (!alpha_significance_coeff_payload) {
+            return std::unexpected(alpha_significance_coeff_payload.error());
+        }
+    }
+    auto shared_significance_chroma_payload = encode_lossy_chroma_payload(
+        cb_quantized_blocks, cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, significance_coeff_config);
+    if (!shared_significance_chroma_payload) {
+        return std::unexpected(shared_significance_chroma_payload.error());
+    }
+    const bool significance_use_shared_chroma_coeff_tables =
+        shared_significance_chroma_payload->size() <
+        cb_significance_coeff_payload->size() + cr_significance_coeff_payload->size();
+    const size_t significance_chroma_coeff_payload_bytes = significance_use_shared_chroma_coeff_tables
+        ? shared_significance_chroma_payload->size()
+        : (cb_significance_coeff_payload->size() + cr_significance_coeff_payload->size());
+    const size_t significance_coeff_payload_bytes =
+        y_significance_coeff_payload->size() +
+        significance_chroma_coeff_payload_bytes +
+        (has_alpha ? alpha_significance_coeff_payload->size() : 0u) +
+        1u;
+    const bool use_coefficient_significance_maps =
+        significance_coeff_payload_bytes < current_coeff_payload_bytes;
+
+    const bool use_shared_chroma_coeff_tables = use_coefficient_significance_maps
+        ? significance_use_shared_chroma_coeff_tables
+        : current_use_shared_chroma_coeff_tables;
+    const auto& final_y_coeff_payload = use_coefficient_significance_maps
+        ? *y_significance_coeff_payload
+        : current_y_coeff_payload;
+    const auto& final_alpha_coeff_payload = use_coefficient_significance_maps
+        ? *alpha_significance_coeff_payload
+        : current_alpha_coeff_payload;
+    const auto& final_independent_cb_payload = use_coefficient_significance_maps
+        ? *cb_significance_coeff_payload
+        : current_independent_cb_payload;
+    const auto& final_independent_cr_payload = use_coefficient_significance_maps
+        ? *cr_significance_coeff_payload
+        : current_independent_cr_payload;
+    const auto& final_shared_chroma_payload = use_coefficient_significance_maps
+        ? *shared_significance_chroma_payload
+        : current_shared_chroma_payload;
+
+    if (use_adaptive_span_streams || use_split_magnitude_signs || use_shared_chroma_coeff_tables ||
+        use_coefficient_table_bank || use_elide_single_symbol_streams || use_coefficient_significance_maps) {
         uint8_t syntax_flags = 0;
         if (use_adaptive_span_streams) {
             syntax_flags |= kLossyTileSyntaxFlagAdaptiveSpanStreams;
@@ -1125,6 +1195,9 @@ static Result<TileEncodeResult> encode_lossy_tile(
         }
         if (use_elide_single_symbol_streams) {
             syntax_flags |= kLossyTileSyntaxFlagElideSingleSymbolStreams;
+        }
+        if (use_coefficient_significance_maps) {
+            syntax_flags |= kLossyTileSyntaxFlagCoefficientSignificanceMaps;
         }
         tile_writer.write_u32(kLossyTileLayoutTagV6);
         tile_writer.write_u8(syntax_flags);

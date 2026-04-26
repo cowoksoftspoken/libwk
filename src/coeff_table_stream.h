@@ -9,6 +9,8 @@ enum class CoeffTableEncoding : uint8_t {
     SingleSymbol = 0,
     DenseRange = 1,
     SparsePairs = 2,
+    DenseRangeU8 = 3,
+    SparsePairsU8 = 4,
 };
 
 using LossyCoeffTable = RansTable<RANS_PRECISION_BITS>;

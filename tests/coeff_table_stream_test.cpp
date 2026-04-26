@@ -38,9 +38,13 @@ TEST(CoeffTableStreamTest, SingleSymbolRoundTrip) {
     EXPECT_EQ(parsed->symbol(3).freq, LossyCoeffTable::TABLE_SIZE);
 }
 
-TEST(CoeffTableStreamTest, SparsePairsRoundTrip) {
-    constexpr int kNumSymbols = 32;
-    auto table = make_table({{1, 7}, {17, 5}, {31, 2}}, kNumSymbols);
+TEST(CoeffTableStreamTest, SparsePairsU8RoundTrip) {
+    constexpr int kNumSymbols = 256;
+    auto table = make_table({
+        {0, 1}, {15, 1}, {30, 1}, {45, 1}, {60, 1}, {75, 1},
+        {90, 1}, {105, 1}, {120, 1}, {135, 1}, {150, 1}, {165, 1},
+        {180, 1}, {195, 1}, {210, 1}, {225, 1}, {240, 1}, {255, 1}
+    }, kNumSymbols);
 
     ByteWriter writer;
     auto written = write_coefficient_table(writer, table, kNumSymbols);
@@ -48,7 +52,7 @@ TEST(CoeffTableStreamTest, SparsePairsRoundTrip) {
 
     const auto bytes = writer.finish();
     ASSERT_FALSE(bytes.empty());
-    EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableEncoding::SparsePairs));
+    EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableEncoding::SparsePairsU8));
 
     ByteReader reader(bytes);
     auto parsed = read_coefficient_table(reader, kNumSymbols, "unit");
@@ -58,9 +62,34 @@ TEST(CoeffTableStreamTest, SparsePairsRoundTrip) {
     }
 }
 
-TEST(CoeffTableStreamTest, DenseRangeRoundTrip) {
+TEST(CoeffTableStreamTest, DenseRangeU8RoundTrip) {
+    constexpr int kNumSymbols = 64;
+    auto table = make_table({
+        {8, 1}, {9, 1}, {10, 1}, {11, 1}, {12, 1},
+        {13, 1}, {14, 1}, {15, 1}, {16, 1}, {17, 1},
+        {18, 1}, {19, 1}, {20, 1}, {21, 1}, {22, 1},
+        {23, 1}, {24, 1}, {25, 1}, {26, 1}, {27, 1}
+    }, kNumSymbols);
+
+    ByteWriter writer;
+    auto written = write_coefficient_table(writer, table, kNumSymbols);
+    ASSERT_TRUE(written.has_value()) << written.error().message;
+
+    const auto bytes = writer.finish();
+    ASSERT_FALSE(bytes.empty());
+    EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableEncoding::DenseRangeU8));
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table(reader, kNumSymbols, "unit");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+    for (int i = 0; i < kNumSymbols; ++i) {
+        EXPECT_EQ(parsed->symbol(i).freq, table.symbol(i).freq);
+    }
+}
+
+TEST(CoeffTableStreamTest, FallsBackToDenseRangeU16ForWideFrequencies) {
     constexpr int kNumSymbols = 32;
-    auto table = make_table({{8, 3}, {9, 5}, {10, 9}, {11, 4}}, kNumSymbols);
+    auto table = make_table({{8, 1}, {9, 1}}, kNumSymbols);
 
     ByteWriter writer;
     auto written = write_coefficient_table(writer, table, kNumSymbols);
@@ -69,6 +98,26 @@ TEST(CoeffTableStreamTest, DenseRangeRoundTrip) {
     const auto bytes = writer.finish();
     ASSERT_FALSE(bytes.empty());
     EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableEncoding::DenseRange));
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table(reader, kNumSymbols, "unit");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+    for (int i = 0; i < kNumSymbols; ++i) {
+        EXPECT_EQ(parsed->symbol(i).freq, table.symbol(i).freq);
+    }
+}
+
+TEST(CoeffTableStreamTest, FallsBackToSparsePairsU16ForWideFrequencies) {
+    constexpr int kNumSymbols = 32;
+    auto table = make_table({{1, 1}, {17, 1}, {31, 1}}, kNumSymbols);
+
+    ByteWriter writer;
+    auto written = write_coefficient_table(writer, table, kNumSymbols);
+    ASSERT_TRUE(written.has_value()) << written.error().message;
+
+    const auto bytes = writer.finish();
+    ASSERT_FALSE(bytes.empty());
+    EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableEncoding::SparsePairs));
 
     ByteReader reader(bytes);
     auto parsed = read_coefficient_table(reader, kNumSymbols, "unit");

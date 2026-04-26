@@ -26,39 +26,70 @@ struct TableBankEntry {
     return writer.finish();
 }
 
-[[nodiscard]] size_t packed_nibble_index_bytes(size_t index_count) {
-    return (index_count + 1) / 2;
+[[nodiscard]] size_t packed_index_bytes(size_t index_count, uint8_t bits_per_index) {
+    return (index_count * bits_per_index + 7u) / 8u;
 }
 
-[[nodiscard]] Result<std::vector<uint8_t>> pack_nibble_indices(std::span<const uint8_t> indices) {
-    std::vector<uint8_t> bytes(packed_nibble_index_bytes(indices.size()), 0);
+[[nodiscard]] Result<std::vector<uint8_t>> pack_fixed_width_indices(std::span<const uint8_t> indices,
+                                                                    uint8_t bits_per_index) {
+    if (bits_per_index != 1u && bits_per_index != 2u && bits_per_index != 4u) {
+        return std::unexpected(Error{
+            ErrorCode::InvalidParameter,
+            "coefficient table bank packed index width is unsupported",
+        });
+    }
+
+    const uint8_t max_index = static_cast<uint8_t>((1u << bits_per_index) - 1u);
+    std::vector<uint8_t> bytes(packed_index_bytes(indices.size(), bits_per_index), 0);
+    size_t bit_offset = 0;
     for (size_t index = 0; index < indices.size(); ++index) {
-        if (indices[index] > 0x0F) {
+        if (indices[index] > max_index) {
             return std::unexpected(
-                Error{ErrorCode::InvalidParameter, "coefficient table bank nibble index is out of range"});
+                Error{ErrorCode::InvalidParameter, "coefficient table bank packed index is out of range"});
         }
-        bytes[index / 2] |= static_cast<uint8_t>(indices[index] << ((index % 2) * 4));
+        const size_t byte_index = bit_offset / 8u;
+        const uint8_t bit_shift = static_cast<uint8_t>(bit_offset % 8u);
+        bytes[byte_index] |= static_cast<uint8_t>(indices[index] << bit_shift);
+        if (bit_shift + bits_per_index > 8u) {
+            bytes[byte_index + 1] |= static_cast<uint8_t>(indices[index] >> (8u - bit_shift));
+        }
+        bit_offset += bits_per_index;
     }
     return bytes;
 }
 
-[[nodiscard]] Result<std::vector<uint8_t>> unpack_nibble_indices(std::span<const uint8_t> bytes,
-                                                                 size_t expected_count,
-                                                                 std::string_view label) {
-    const size_t expected_bytes = packed_nibble_index_bytes(expected_count);
+[[nodiscard]] Result<std::vector<uint8_t>> unpack_fixed_width_indices(std::span<const uint8_t> bytes,
+                                                                      size_t expected_count,
+                                                                      uint8_t bits_per_index,
+                                                                      std::string_view label) {
+    if (bits_per_index != 1u && bits_per_index != 2u && bits_per_index != 4u) {
+        return std::unexpected(invalid_bank_error(label, "uses an unsupported packed index width"));
+    }
+
+    const size_t expected_bytes = packed_index_bytes(expected_count, bits_per_index);
     if (bytes.size() != expected_bytes) {
-        return std::unexpected(invalid_bank_error(label, "nibble index stream size mismatch"));
+        return std::unexpected(invalid_bank_error(label, "packed index stream size mismatch"));
     }
 
     std::vector<uint8_t> indices(expected_count, 0);
+    const uint8_t mask = static_cast<uint8_t>((1u << bits_per_index) - 1u);
     for (size_t index = 0; index < expected_count; ++index) {
-        indices[index] = static_cast<uint8_t>((bytes[index / 2] >> ((index % 2) * 4)) & 0x0F);
+        const size_t bit_offset = index * bits_per_index;
+        const size_t byte_index = bit_offset / 8u;
+        const uint8_t bit_shift = static_cast<uint8_t>(bit_offset % 8u);
+        uint16_t value = static_cast<uint16_t>(bytes[byte_index] >> bit_shift);
+        if (bit_shift + bits_per_index > 8u) {
+            value |= static_cast<uint16_t>(bytes[byte_index + 1]) << (8u - bit_shift);
+        }
+        indices[index] = static_cast<uint8_t>(value & mask);
     }
 
-    if ((expected_count & 1u) != 0u && !bytes.empty()) {
-        const uint8_t padding = static_cast<uint8_t>(bytes.back() >> 4);
-        if (padding != 0) {
-            return std::unexpected(invalid_bank_error(label, "has non-zero nibble padding"));
+    const size_t used_bits = expected_count * bits_per_index;
+    if (!bytes.empty() && (used_bits % 8u) != 0u) {
+        const uint8_t used_low_bits = static_cast<uint8_t>(used_bits % 8u);
+        const uint8_t padding_mask = static_cast<uint8_t>(0xFFu << used_low_bits);
+        if ((bytes.back() & padding_mask) != 0) {
+            return std::unexpected(invalid_bank_error(label, "has non-zero packed-index padding"));
         }
     }
 
@@ -125,8 +156,13 @@ struct TableBankEntry {
         writer.write_bytes(entry.serialized);
     }
 
-    if (mode == CoeffTableBankMode::PackedNibbleIndices) {
-        auto packed = pack_nibble_indices(indices);
+    if (mode == CoeffTableBankMode::PackedBitIndices ||
+        mode == CoeffTableBankMode::PackedTwoBitIndices ||
+        mode == CoeffTableBankMode::PackedNibbleIndices) {
+        const uint8_t bits_per_index =
+            mode == CoeffTableBankMode::PackedBitIndices ? 1u :
+            mode == CoeffTableBankMode::PackedTwoBitIndices ? 2u : 4u;
+        auto packed = pack_fixed_width_indices(indices, bits_per_index);
         if (!packed) {
             return std::unexpected(packed.error());
         }
@@ -211,8 +247,24 @@ Result<void> write_coefficient_table_bank(ByteWriter& writer,
         bank_payload_size += entry.serialized.size();
     }
 
+    if (bank->size() <= 2u) {
+        const size_t bit_size = bank_payload_size + packed_index_bytes(table_indices.size(), 1u);
+        if (bit_size < best_size) {
+            best_mode = CoeffTableBankMode::PackedBitIndices;
+            best_size = bit_size;
+        }
+    }
+
+    if (bank->size() <= 4u) {
+        const size_t two_bit_size = bank_payload_size + packed_index_bytes(table_indices.size(), 2u);
+        if (two_bit_size < best_size) {
+            best_mode = CoeffTableBankMode::PackedTwoBitIndices;
+            best_size = two_bit_size;
+        }
+    }
+
     if (bank->size() <= 16u) {
-        const size_t nibble_size = bank_payload_size + packed_nibble_index_bytes(table_indices.size());
+        const size_t nibble_size = bank_payload_size + packed_index_bytes(table_indices.size(), 4u);
         if (nibble_size < best_size) {
             best_mode = CoeffTableBankMode::PackedNibbleIndices;
             best_size = nibble_size;
@@ -278,12 +330,40 @@ Result<std::vector<LossyCoeffTable>> read_coefficient_table_bank(ByteReader& rea
         if (!bank) {
             return std::unexpected(bank.error());
         }
-        const size_t index_bytes = packed_nibble_index_bytes(expected_count);
+        const size_t index_bytes = packed_index_bytes(expected_count, 4u);
         auto packed_indices = reader.read_bytes(index_bytes);
         if (!packed_indices) {
             return std::unexpected(packed_indices.error());
         }
-        auto indices = unpack_nibble_indices(*packed_indices, expected_count, label);
+        auto indices = unpack_fixed_width_indices(*packed_indices, expected_count, 4u, label);
+        if (!indices) {
+            return std::unexpected(indices.error());
+        }
+        return materialize_bank_tables(*bank, *indices, label);
+    }
+    case CoeffTableBankMode::PackedBitIndices:
+    case CoeffTableBankMode::PackedTwoBitIndices: {
+        auto bank_size = reader.read_u8();
+        if (!bank_size) {
+            return std::unexpected(bank_size.error());
+        }
+        const uint8_t max_bank_size =
+            *mode_read == static_cast<uint8_t>(CoeffTableBankMode::PackedBitIndices) ? 2u : 4u;
+        if (*bank_size > max_bank_size) {
+            return std::unexpected(invalid_bank_error(label, "has too many packed bank entries"));
+        }
+        auto bank = read_bank_entries(reader, *bank_size, num_symbols, label);
+        if (!bank) {
+            return std::unexpected(bank.error());
+        }
+        const uint8_t bits_per_index =
+            *mode_read == static_cast<uint8_t>(CoeffTableBankMode::PackedBitIndices) ? 1u : 2u;
+        const size_t index_bytes = packed_index_bytes(expected_count, bits_per_index);
+        auto packed_indices = reader.read_bytes(index_bytes);
+        if (!packed_indices) {
+            return std::unexpected(packed_indices.error());
+        }
+        auto indices = unpack_fixed_width_indices(*packed_indices, expected_count, bits_per_index, label);
         if (!indices) {
             return std::unexpected(indices.error());
         }

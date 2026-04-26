@@ -98,7 +98,7 @@ FILE HEADER (magic + version)
    - Layout tag `0x334D4843` keeps the packed prediction mode streams and additionally stores packed coefficient-span streams.
    - Layout tag `0x344D4843` keeps the packed prediction modes and coefficient spans, and switches coefficient-table metadata to adaptive serialization.
    - Layout tag `0x354D4843` keeps packed modes, coefficient spans, adaptive coefficient tables, and additionally stores per-plane maximum coefficient extents so fully empty high-frequency contexts can be omitted.
-   - Layout tag `0x364D4843` stores one `uint8` syntax-flags field after the layout tag. Bit `0` enables adaptive coefficient-span stream encodings, bit `1` enables per-plane maximum coefficient extents, bit `2` enables split magnitude/sign coefficient coding, bit `3` enables shared chroma coefficient tables, bit `4` enables coefficient-table bank signaling, and bit `5` enables single-symbol coefficient-stream elision.
+   - Layout tag `0x364D4843` stores one `uint8` syntax-flags field after the layout tag. Bit `0` enables adaptive coefficient-span stream encodings, bit `1` enables per-plane maximum coefficient extents, bit `2` enables split magnitude/sign coefficient coding, bit `3` enables shared chroma coefficient tables, bit `4` enables coefficient-table bank signaling, bit `5` enables single-symbol coefficient-stream elision, and bit `6` enables coefficient significance maps.
    - Layout tag `0x314D4843` is the legacy layout and stores one `uint8` prediction mode per block.
    - One stream is stored for luma blocks and one stream is stored for chroma blocks.
 5. **Coefficient span streams**:
@@ -119,6 +119,8 @@ FILE HEADER (magic + version)
      - `0`: single-symbol table, followed by one `uint16` symbol id
      - `1`: dense range, followed by `first_symbol`, `last_symbol`, and dense `uint16` frequencies
      - `2`: sparse pairs, followed by `pair_count` and repeated `(symbol, frequency)` pairs
+     - `3`: dense range, followed by `first_symbol`, `last_symbol`, and dense `uint8` frequencies
+     - `4`: sparse pairs, followed by `pair_count` and repeated `(symbol:uint16, frequency:uint8)` pairs
    - Layout tag `0x354D4843` uses the same table encodings, but only serializes coefficient contexts below the stored per-plane maximum coefficient extent.
    - Layout tag `0x364D4843` uses the same table encodings and applies the same per-plane extent omission only when syntax flag bit `1` is set.
    - If syntax flag bit `3` is set, each chroma coefficient context stores a single shared table that is reused for both the Cb and Cr entropy streams at that coefficient position.
@@ -127,8 +129,14 @@ FILE HEADER (magic + version)
      - `1`: one shared adaptive table reused for every coefficient context in the payload
      - `2`: adaptive table bank + packed 4-bit per-context bank indices
      - `3`: adaptive table bank + raw 8-bit per-context bank indices
+     - `4`: adaptive table bank + packed 1-bit per-context bank indices
+     - `5`: adaptive table bank + packed 2-bit per-context bank indices
    - Table-bank signaling is only valid for layout tag `0x364D4843`, which already implies adaptive coefficient-table serialization.
    - If syntax flag bit `5` is set and a coefficient context resolves to an adaptive single-symbol table, the context omits the `uint32` rANS byte count and rANS payload entirely.
+   - If syntax flag bit `6` is set, each coefficient context with active blocks writes a presence stream before the entropy stream:
+     - `0`: all active coefficients are zero
+     - `1`: all active coefficients are non-zero
+     - `2`: raw packed 1-bit presence flags in block decode order
 7. **rANS-coded coefficients**:
    - Legacy signed coding stores symbols in the range `[-1024, 1024]` mapped to `[0, 2048]`.
    - If layout tag `0x364D4843` sets syntax flag bit `2`, each coefficient context stores magnitude symbols in the range `[0, 1024]`, then stores packed sign bits for the non-zero magnitudes in block decode order.
@@ -137,6 +145,7 @@ FILE HEADER (magic + version)
    - If syntax flag bit `5` is set and the coefficient table is single-symbol:
      - signed mode reconstructs that symbol for every active block with no explicit rANS stream bytes
      - split magnitude/sign mode reconstructs the shared magnitude for every active block, then reads packed sign bits only when the magnitude is non-zero
+   - If syntax flag bit `6` is set, the entropy stream encodes only coefficients whose presence bit is `1`; zero-valued active blocks are reconstructed from the presence stream without consuming rANS symbols.
 8. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, then an alpha prediction mode stream using the same layout-tag-defined signaling, then an alpha coefficient-span stream when the layout tag is `0x334D4843`, `0x344D4843`, `0x354D4843`, or `0x364D4843`, then an alpha maximum coefficient extent when the layout tag is `0x354D4843` or when layout tag `0x364D4843` has syntax flag bit `1` set, then one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
 
 ### 3.3 Lossless Tile Payload

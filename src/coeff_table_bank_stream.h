@@ -9,6 +9,8 @@ enum class CoeffTableBankMode : uint8_t {
     SingleTable = 1,
     PackedNibbleIndices = 2,
     RawByteIndices = 3,
+    PackedBitIndices = 4,
+    PackedTwoBitIndices = 5,
 };
 
 [[nodiscard]] Result<void> write_coefficient_table_bank(ByteWriter& writer,

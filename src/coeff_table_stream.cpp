@@ -34,6 +34,16 @@ namespace {
     return {};
 }
 
+[[nodiscard]] bool frequencies_fit_in_u8(const LossyCoeffTable& table,
+                                         std::span<const int> symbols) {
+    for (int symbol : symbols) {
+        if (table.symbol(symbol).freq > std::numeric_limits<uint8_t>::max()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }
 
 Result<void> write_coefficient_table(ByteWriter& writer,
@@ -59,30 +69,90 @@ Result<void> write_coefficient_table(ByteWriter& writer,
 
     const int first_nonzero = nonzero_symbols.front();
     const int last_nonzero = nonzero_symbols.back();
-    const size_t dense_payload_bytes = 4u + static_cast<size_t>(last_nonzero - first_nonzero + 1) * sizeof(uint16_t);
-    const size_t sparse_payload_bytes = 2u + nonzero_symbols.size() * sizeof(uint16_t) * 2u;
-
-    if (sparse_payload_bytes < dense_payload_bytes) {
-        if (nonzero_symbols.size() > std::numeric_limits<uint16_t>::max()) {
-            return std::unexpected(Error{ErrorCode::InvalidParameter,
-                                         "coefficient table has too many sparse symbols"});
+    const size_t dense_symbol_count = static_cast<size_t>(last_nonzero - first_nonzero + 1);
+    const bool dense_fits_u8 = [&]() {
+        for (int symbol_index = first_nonzero; symbol_index <= last_nonzero; ++symbol_index) {
+            if (table.symbol(symbol_index).freq > std::numeric_limits<uint8_t>::max()) {
+                return false;
+            }
         }
-        writer.write_u8(static_cast<uint8_t>(CoeffTableEncoding::SparsePairs));
-        writer.write_u16(static_cast<uint16_t>(nonzero_symbols.size()));
-        for (int symbol_index : nonzero_symbols) {
-            writer.write_u16(static_cast<uint16_t>(symbol_index));
-            writer.write_u16(table.symbol(symbol_index).freq);
+        return true;
+    }();
+    const bool sparse_fits_u8 = frequencies_fit_in_u8(table, nonzero_symbols);
+
+    if (nonzero_symbols.size() > std::numeric_limits<uint16_t>::max()) {
+        return std::unexpected(Error{ErrorCode::InvalidParameter,
+                                     "coefficient table has too many sparse symbols"});
+    }
+
+    struct Candidate {
+        CoeffTableEncoding encoding;
+        size_t payload_bytes;
+    };
+
+    std::vector<Candidate> candidates;
+    candidates.push_back(Candidate{
+        .encoding = CoeffTableEncoding::DenseRange,
+        .payload_bytes = 4u + dense_symbol_count * sizeof(uint16_t),
+    });
+    candidates.push_back(Candidate{
+        .encoding = CoeffTableEncoding::SparsePairs,
+        .payload_bytes = 2u + nonzero_symbols.size() * sizeof(uint16_t) * 2u,
+    });
+    if (dense_fits_u8) {
+        candidates.push_back(Candidate{
+            .encoding = CoeffTableEncoding::DenseRangeU8,
+            .payload_bytes = 4u + dense_symbol_count,
+        });
+    }
+    if (sparse_fits_u8) {
+        candidates.push_back(Candidate{
+            .encoding = CoeffTableEncoding::SparsePairsU8,
+            .payload_bytes = 2u + nonzero_symbols.size() * 3u,
+        });
+    }
+
+    Candidate best = candidates.front();
+    for (size_t index = 1; index < candidates.size(); ++index) {
+        if (candidates[index].payload_bytes < best.payload_bytes) {
+            best = candidates[index];
+        }
+    }
+
+    writer.write_u8(static_cast<uint8_t>(best.encoding));
+    switch (best.encoding) {
+    case CoeffTableEncoding::DenseRange:
+    case CoeffTableEncoding::DenseRangeU8:
+        writer.write_u16(static_cast<uint16_t>(first_nonzero));
+        writer.write_u16(static_cast<uint16_t>(last_nonzero));
+        for (int symbol_index = first_nonzero; symbol_index <= last_nonzero; ++symbol_index) {
+            const uint16_t freq = table.symbol(symbol_index).freq;
+            if (best.encoding == CoeffTableEncoding::DenseRangeU8) {
+                writer.write_u8(static_cast<uint8_t>(freq));
+            } else {
+                writer.write_u16(freq);
+            }
         }
         return {};
+    case CoeffTableEncoding::SparsePairs:
+    case CoeffTableEncoding::SparsePairsU8:
+        writer.write_u16(static_cast<uint16_t>(nonzero_symbols.size()));
+        for (int symbol_index : nonzero_symbols) {
+            const uint16_t freq = table.symbol(symbol_index).freq;
+            writer.write_u16(static_cast<uint16_t>(symbol_index));
+            if (best.encoding == CoeffTableEncoding::SparsePairsU8) {
+                writer.write_u8(static_cast<uint8_t>(freq));
+            } else {
+                writer.write_u16(freq);
+            }
+        }
+        return {};
+    default:
+        break;
     }
 
-    writer.write_u8(static_cast<uint8_t>(CoeffTableEncoding::DenseRange));
-    writer.write_u16(static_cast<uint16_t>(first_nonzero));
-    writer.write_u16(static_cast<uint16_t>(last_nonzero));
-    for (int symbol_index = first_nonzero; symbol_index <= last_nonzero; ++symbol_index) {
-        writer.write_u16(table.symbol(symbol_index).freq);
-    }
-    return {};
+    return std::unexpected(Error{ErrorCode::InvalidParameter,
+                                 "coefficient table encoder selected an unsupported mode"});
 }
 
 Result<LossyCoeffTable> read_coefficient_table(ByteReader& reader,
@@ -130,6 +200,25 @@ Result<LossyCoeffTable> read_coefficient_table(ByteReader& reader,
         }
         break;
     }
+    case CoeffTableEncoding::DenseRangeU8: {
+        auto first = reader.read_u16();
+        auto last = reader.read_u16();
+        if (!first || !last) {
+            return std::unexpected(Error{ErrorCode::TruncatedInput,
+                                         std::string(label) + " coefficient table is truncated"});
+        }
+        if (*first > *last || *last >= num_symbols) {
+            return std::unexpected(invalid_table_error(label, "has invalid dense range"));
+        }
+        for (uint16_t symbol_index = *first; symbol_index <= *last; ++symbol_index) {
+            auto freq = reader.read_u8();
+            if (!freq) {
+                return std::unexpected(freq.error());
+            }
+            counts[symbol_index] = *freq;
+        }
+        break;
+    }
     case CoeffTableEncoding::SparsePairs: {
         auto pair_count = reader.read_u16();
         if (!pair_count) {
@@ -141,6 +230,34 @@ Result<LossyCoeffTable> read_coefficient_table(ByteReader& reader,
         for (uint16_t i = 0; i < *pair_count; ++i) {
             auto symbol = reader.read_u16();
             auto freq = reader.read_u16();
+            if (!symbol || !freq) {
+                return std::unexpected(Error{ErrorCode::TruncatedInput,
+                                             std::string(label) + " coefficient table is truncated"});
+            }
+            if (*symbol >= num_symbols) {
+                return std::unexpected(invalid_table_error(label, "has invalid sparse symbol index"));
+            }
+            if (*freq == 0) {
+                return std::unexpected(invalid_table_error(label, "has zero sparse frequency"));
+            }
+            if (counts[*symbol] != 0) {
+                return std::unexpected(invalid_table_error(label, "duplicates a sparse symbol"));
+            }
+            counts[*symbol] = *freq;
+        }
+        break;
+    }
+    case CoeffTableEncoding::SparsePairsU8: {
+        auto pair_count = reader.read_u16();
+        if (!pair_count) {
+            return std::unexpected(pair_count.error());
+        }
+        if (*pair_count == 0) {
+            return std::unexpected(invalid_table_error(label, "has zero sparse pairs"));
+        }
+        for (uint16_t i = 0; i < *pair_count; ++i) {
+            auto symbol = reader.read_u16();
+            auto freq = reader.read_u8();
             if (!symbol || !freq) {
                 return std::unexpected(Error{ErrorCode::TruncatedInput,
                                              std::string(label) + " coefficient table is truncated"});

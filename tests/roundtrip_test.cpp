@@ -5,6 +5,7 @@
 #include <optional>
 #include <wk/wk.hpp>
 #include "../src/common.h"
+#include "../src/coeff_presence_stream.h"
 #include "../src/coeff_sign_stream.h"
 #include "../src/coeff_table_bank_stream.h"
 #include "../src/container.h"
@@ -126,6 +127,7 @@ struct LossyTileSyntaxInfo {
     bool shared_chroma_tables = false;
     bool coefficient_table_bank = false;
     bool elide_single_symbol_streams = false;
+    bool coefficient_significance_maps = false;
 };
 
 Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> payload) {
@@ -153,6 +155,8 @@ Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> pay
             (info.syntax_flags & kLossyTileSyntaxFlagCoefficientTableBank) != 0;
         info.elide_single_symbol_streams =
             (info.syntax_flags & kLossyTileSyntaxFlagElideSingleSymbolStreams) != 0;
+        info.coefficient_significance_maps =
+            (info.syntax_flags & kLossyTileSyntaxFlagCoefficientSignificanceMaps) != 0;
     } else if (info.layout_tag == kLossyTileLayoutTagV5) {
         info.plane_extents = true;
     }
@@ -599,13 +603,20 @@ TEST(RoundtripTest, CoefficientSignCorruptionRejected) {
             table = std::move(*table_read);
         }
 
-        size_t nonzero_count = 0;
+        size_t nonzero_count = active_blocks;
+        if (syntax->coefficient_significance_maps) {
+            auto presence = read_adaptive_coefficient_presence(reader, active_blocks, "lossy");
+            ASSERT_TRUE(presence.has_value()) << presence.error().message;
+            nonzero_count = std::count(presence->begin(), presence->end(), static_cast<uint8_t>(1));
+            if (nonzero_count == 0) {
+                continue;
+            }
+        }
+
         const auto single_symbol = syntax->elide_single_symbol_streams
             ? single_symbol_table_value(table, 1025)
             : std::nullopt;
-        if (single_symbol.has_value()) {
-            nonzero_count = *single_symbol != 0 ? active_blocks : 0u;
-        } else {
+        if (!single_symbol.has_value()) {
             auto encoded_size = reader.read_u32();
             ASSERT_TRUE(encoded_size.has_value()) << encoded_size.error().message;
             auto encoded_bytes = reader.read_bytes(*encoded_size);
@@ -615,14 +626,15 @@ TEST(RoundtripTest, CoefficientSignCorruptionRejected) {
             decoder.init(encoded_bytes->data(), encoded_bytes->size());
             ASSERT_TRUE(decoder.ok());
 
-            for (size_t block_index = 0; block_index < y_blocks; ++block_index) {
-                if ((*y_spans)[block_index] <= coeff_index) {
-                    continue;
-                }
+            const size_t symbols_to_decode = syntax->coefficient_significance_maps ? nonzero_count : active_blocks;
+            nonzero_count = 0;
+            for (size_t symbol_index = 0; symbol_index < symbols_to_decode; ++symbol_index) {
                 const int symbol = decoder.decode(table);
                 ASSERT_TRUE(decoder.ok());
                 nonzero_count += symbol != 0 ? 1u : 0u;
             }
+        } else if (!syntax->coefficient_significance_maps) {
+            nonzero_count = *single_symbol != 0 ? active_blocks : 0u;
         }
 
         if (nonzero_count == 0) {
