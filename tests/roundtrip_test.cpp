@@ -128,6 +128,7 @@ struct LossyTileSyntaxInfo {
     bool coefficient_table_bank = false;
     bool elide_single_symbol_streams = false;
     bool coefficient_significance_maps = false;
+    bool adaptive_coefficient_signs = false;
 };
 
 Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> payload) {
@@ -157,6 +158,8 @@ Result<LossyTileSyntaxInfo> parse_lossy_tile_syntax(std::span<const uint8_t> pay
             (info.syntax_flags & kLossyTileSyntaxFlagElideSingleSymbolStreams) != 0;
         info.coefficient_significance_maps =
             (info.syntax_flags & kLossyTileSyntaxFlagCoefficientSignificanceMaps) != 0;
+        info.adaptive_coefficient_signs =
+            (info.syntax_flags & kLossyTileSyntaxFlagAdaptiveCoefficientSigns) != 0;
     } else if (info.layout_tag == kLossyTileLayoutTagV5) {
         info.plane_extents = true;
     }
@@ -576,6 +579,31 @@ TEST(RoundtripTest, CoefficientSignCorruptionRejected) {
         y_extent = *y_extent_read;
     }
 
+    std::vector<uint8_t> significance_flags(y_extent, 0);
+    if (syntax->coefficient_significance_maps) {
+        auto flags = unpack_coefficient_presence(
+            std::span<const uint8_t>(payload.data() + syntax->stream_offset + reader.position(),
+                                     packed_coefficient_presence_bytes(y_extent)),
+            y_extent,
+            "lossy significance mode");
+        ASSERT_TRUE(flags.has_value()) << flags.error().message;
+        significance_flags = std::move(*flags);
+        auto skipped = reader.read_bytes(packed_coefficient_presence_bytes(y_extent));
+        ASSERT_TRUE(skipped.has_value()) << skipped.error().message;
+    }
+    std::vector<uint8_t> sign_modes(y_extent, kCoefficientSignModeRawPacked);
+    if (syntax->adaptive_coefficient_signs) {
+        auto flags = unpack_coefficient_sign_modes(
+            std::span<const uint8_t>(payload.data() + syntax->stream_offset + reader.position(),
+                                     packed_coefficient_sign_mode_bytes(y_extent)),
+            y_extent,
+            "lossy coefficient sign mode");
+        ASSERT_TRUE(flags.has_value()) << flags.error().message;
+        sign_modes = std::move(*flags);
+        auto skipped = reader.read_bytes(packed_coefficient_sign_mode_bytes(y_extent));
+        ASSERT_TRUE(skipped.has_value()) << skipped.error().message;
+    }
+
     std::vector<LossyCoeffTable> y_tables;
     if (syntax->coefficient_table_bank) {
         auto tables = read_coefficient_table_bank(reader, y_extent, 1025, "lossy");
@@ -603,8 +631,9 @@ TEST(RoundtripTest, CoefficientSignCorruptionRejected) {
             table = std::move(*table_read);
         }
 
+        const bool use_significance_map = significance_flags[coeff_index] != 0;
         size_t nonzero_count = active_blocks;
-        if (syntax->coefficient_significance_maps) {
+        if (use_significance_map) {
             auto presence = read_adaptive_coefficient_presence(reader, active_blocks, "lossy");
             ASSERT_TRUE(presence.has_value()) << presence.error().message;
             nonzero_count = std::count(presence->begin(), presence->end(), static_cast<uint8_t>(1));
@@ -626,14 +655,14 @@ TEST(RoundtripTest, CoefficientSignCorruptionRejected) {
             decoder.init(encoded_bytes->data(), encoded_bytes->size());
             ASSERT_TRUE(decoder.ok());
 
-            const size_t symbols_to_decode = syntax->coefficient_significance_maps ? nonzero_count : active_blocks;
+            const size_t symbols_to_decode = use_significance_map ? nonzero_count : active_blocks;
             nonzero_count = 0;
             for (size_t symbol_index = 0; symbol_index < symbols_to_decode; ++symbol_index) {
                 const int symbol = decoder.decode(table);
                 ASSERT_TRUE(decoder.ok());
                 nonzero_count += symbol != 0 ? 1u : 0u;
             }
-        } else if (!syntax->coefficient_significance_maps) {
+        } else if (!use_significance_map) {
             nonzero_count = *single_symbol != 0 ? active_blocks : 0u;
         }
 
@@ -641,20 +670,82 @@ TEST(RoundtripTest, CoefficientSignCorruptionRejected) {
             continue;
         }
 
-        const size_t sign_offset = syntax->stream_offset + reader.position();
-        const size_t sign_bytes = packed_coefficient_sign_bytes(nonzero_count);
-        ASSERT_GT(payload.size(), sign_offset + sign_bytes - 1);
-        if (nonzero_count % 8u != 0u) {
-            payload[sign_offset + sign_bytes - 1] |= 0x80;
-            corrupted = true;
-            break;
-        }
+        if (sign_modes[coeff_index] == kCoefficientSignModeRawPacked) {
+            const size_t sign_offset = syntax->stream_offset + reader.position();
+            const size_t sign_bytes = packed_coefficient_sign_bytes(nonzero_count);
+            ASSERT_GT(payload.size(), sign_offset + sign_bytes - 1);
+            if (nonzero_count % 8u != 0u) {
+                payload[sign_offset + sign_bytes - 1] |= 0x80;
+                corrupted = true;
+                break;
+            }
 
-        auto sign_bits = read_packed_coefficient_signs(reader, nonzero_count, "lossy");
-        ASSERT_TRUE(sign_bits.has_value()) << sign_bits.error().message;
+            auto sign_bits = read_packed_coefficient_signs(reader, nonzero_count, "lossy");
+            ASSERT_TRUE(sign_bits.has_value()) << sign_bits.error().message;
+        } else {
+            ASSERT_TRUE(sign_modes[coeff_index] == kCoefficientSignModeAllPositive ||
+                        sign_modes[coeff_index] == kCoefficientSignModeAllNegative);
+        }
     }
 
     ASSERT_TRUE(corrupted);
+
+    auto broken = write_container(*file);
+    ASSERT_TRUE(broken.has_value()) << broken.error().message;
+
+    auto decoded = decode(*broken);
+    EXPECT_FALSE(decoded.has_value());
+    EXPECT_EQ(decoded.error().code, ErrorCode::DecodeFailed);
+}
+
+TEST(RoundtripTest, CoefficientSignModeCorruptionRejected) {
+    Image image = make_rgb_gradient(24, 24);
+
+    EncoderConfig config;
+    config.quality = 85.0f;
+    config.subsampling = Subsampling::YUV444;
+
+    auto encoded = encode(image, config);
+    ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+
+    auto file = parse_container(*encoded);
+    ASSERT_TRUE(file.has_value()) << file.error().message;
+    ASSERT_EQ(file->tile_chunks.size(), 1u);
+
+    auto& payload = file->tile_chunks.front().payload;
+    auto syntax = parse_lossy_tile_syntax(payload);
+    ASSERT_TRUE(syntax.has_value()) << syntax.error().message;
+    if (!syntax->adaptive_coefficient_signs) {
+        GTEST_SKIP() << "encoded sample did not select adaptive coefficient sign metadata";
+    }
+
+    const size_t y_blocks = 9;
+    const size_t chroma_blocks = 9;
+    const size_t y_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(y_blocks);
+    const size_t chroma_mode_stream_bytes = sizeof(uint16_t) + packed_prediction_mode_bytes(chroma_blocks);
+    const size_t y_span_stream_bytes = encoded_coefficient_span_stream_bytes(
+        payload, syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes,
+        syntax->adaptive_spans, y_blocks);
+    const size_t chroma_span_stream_bytes = encoded_coefficient_span_stream_bytes(
+        payload, syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes + y_span_stream_bytes,
+        syntax->adaptive_spans, chroma_blocks);
+    const size_t plane_extent_bytes = syntax->plane_extents ? 2u : 0u;
+    size_t y_extent = 64;
+    if (syntax->plane_extents) {
+        const size_t y_extent_offset = syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes +
+                                       y_span_stream_bytes + chroma_span_stream_bytes;
+        ASSERT_GT(payload.size(), y_extent_offset);
+        y_extent = payload[y_extent_offset];
+    }
+    const size_t significance_flag_bytes = syntax->coefficient_significance_maps
+        ? packed_coefficient_presence_bytes(y_extent)
+        : 0u;
+    const size_t sign_mode_offset = syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes +
+                                    y_span_stream_bytes + chroma_span_stream_bytes + plane_extent_bytes +
+                                    significance_flag_bytes;
+
+    ASSERT_GT(payload.size(), sign_mode_offset);
+    payload[sign_mode_offset] = 0xFF;
 
     auto broken = write_container(*file);
     ASSERT_TRUE(broken.has_value()) << broken.error().message;
@@ -737,8 +828,22 @@ TEST(RoundtripTest, CoefficientTableCorruptionRejected) {
         payload, syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes + y_span_stream_bytes,
         syntax->adaptive_spans, chroma_blocks);
     const size_t plane_extent_bytes = syntax->plane_extents ? 2u : 0u;
+    size_t y_extent = 64;
+    if (syntax->plane_extents) {
+        const size_t y_extent_offset = syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes +
+                                       y_span_stream_bytes + chroma_span_stream_bytes;
+        ASSERT_GT(payload.size(), y_extent_offset);
+        y_extent = payload[y_extent_offset];
+    }
+    const size_t significance_flag_bytes = syntax->coefficient_significance_maps
+        ? packed_coefficient_presence_bytes(y_extent)
+        : 0u;
+    const size_t sign_mode_bytes = syntax->adaptive_coefficient_signs
+        ? packed_coefficient_sign_mode_bytes(y_extent)
+        : 0u;
     const size_t coeff_table_offset = syntax->stream_offset + y_mode_stream_bytes + chroma_mode_stream_bytes +
-                                      y_span_stream_bytes + chroma_span_stream_bytes + plane_extent_bytes;
+                                      y_span_stream_bytes + chroma_span_stream_bytes + plane_extent_bytes +
+                                      significance_flag_bytes + sign_mode_bytes;
 
     ASSERT_GT(payload.size(), coeff_table_offset);
     payload[coeff_table_offset] = 0xFF;

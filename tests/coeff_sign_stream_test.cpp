@@ -36,3 +36,43 @@ TEST(CoeffSignStreamTest, RejectsNonZeroPaddingBits) {
     EXPECT_FALSE(unpacked.has_value());
     EXPECT_EQ(unpacked.error().code, ErrorCode::DecodeFailed);
 }
+
+TEST(CoeffSignStreamTest, PackAndUnpackSignModesRoundTrip) {
+    const std::array<uint8_t, 6> modes = {
+        kCoefficientSignModeRawPacked,
+        kCoefficientSignModeAllPositive,
+        kCoefficientSignModeAllNegative,
+        kCoefficientSignModeRawPacked,
+        kCoefficientSignModeAllNegative,
+        kCoefficientSignModeAllPositive,
+    };
+
+    auto packed = pack_coefficient_sign_modes(modes);
+    ASSERT_TRUE(packed.has_value()) << packed.error().message;
+    EXPECT_EQ(packed->size(), packed_coefficient_sign_mode_bytes(modes.size()));
+
+    auto unpacked = unpack_coefficient_sign_modes(*packed, modes.size(), "lossy");
+    ASSERT_TRUE(unpacked.has_value()) << unpacked.error().message;
+    EXPECT_TRUE(std::equal(unpacked->begin(), unpacked->end(), modes.begin()));
+}
+
+TEST(CoeffSignStreamTest, RejectsInvalidSignModeValue) {
+    const std::array<uint8_t, 1> modes = {3};
+    auto packed = pack_coefficient_sign_modes(modes);
+    EXPECT_FALSE(packed.has_value());
+    EXPECT_EQ(packed.error().code, ErrorCode::InvalidParameter);
+}
+
+TEST(CoeffSignStreamTest, RejectsReservedSignModeOnDecode) {
+    const std::array<uint8_t, 1> packed = {0x03};
+    auto unpacked = unpack_coefficient_sign_modes(packed, 1, "lossy");
+    EXPECT_FALSE(unpacked.has_value());
+    EXPECT_EQ(unpacked.error().code, ErrorCode::DecodeFailed);
+}
+
+TEST(CoeffSignStreamTest, RejectsNonZeroSignModePaddingBits) {
+    const std::array<uint8_t, 1> packed = {0x40};
+    auto unpacked = unpack_coefficient_sign_modes(packed, 1, "lossy");
+    EXPECT_FALSE(unpacked.has_value());
+    EXPECT_EQ(unpacked.error().code, ErrorCode::DecodeFailed);
+}

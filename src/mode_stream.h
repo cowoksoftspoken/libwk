@@ -19,6 +19,7 @@ constexpr uint8_t kLossyTileSyntaxFlagSharedChromaCoeffTables = 1u << 3;
 constexpr uint8_t kLossyTileSyntaxFlagCoefficientTableBank = 1u << 4;
 constexpr uint8_t kLossyTileSyntaxFlagElideSingleSymbolStreams = 1u << 5;
 constexpr uint8_t kLossyTileSyntaxFlagCoefficientSignificanceMaps = 1u << 6;
+constexpr uint8_t kLossyTileSyntaxFlagAdaptiveCoefficientSigns = 1u << 7;
 
 [[nodiscard]] constexpr size_t packed_prediction_mode_bytes(size_t mode_count) {
     return (mode_count + 1) / 2;

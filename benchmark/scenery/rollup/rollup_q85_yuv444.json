@@ -1,11 +1,11 @@
 ﻿{
     "profile":  "q85_yuv444",
-    "input_dir":  "photos/scenery",
+    "input_dir":  "photos",
     "total_images":  3,
     "overall":  {
-                    "key":  "overall",
+                    "key":  "scenery",
                     "count":  3,
-                    "total_wk_bytes":  1914237,
+                    "total_wk_bytes":  1913198,
                     "avg_psnr":  39.837,
                     "avg_ssim":  0.966654,
                     "avg_chroma_psnr":  48.8743,
@@ -16,7 +16,7 @@
                            {
                                "key":  "scenery",
                                "count":  3,
-                               "total_wk_bytes":  1914237,
+                               "total_wk_bytes":  1913198,
                                "avg_psnr":  39.837,
                                "avg_ssim":  0.966654,
                                "avg_chroma_psnr":  48.8743,
@@ -28,7 +28,7 @@
                                {
                                    "key":  "balanced",
                                    "count":  2,
-                                   "total_wk_bytes":  1473347,
+                                   "total_wk_bytes":  1472308,
                                    "avg_psnr":  41.1452,
                                    "avg_ssim":  0.983647,
                                    "avg_chroma_psnr":  51.0704,
@@ -53,7 +53,7 @@
                                       "summary":  {
                                                       "key":  "scenery|balanced",
                                                       "count":  2,
-                                                      "total_wk_bytes":  1473347,
+                                                      "total_wk_bytes":  1472308,
                                                       "avg_psnr":  41.1452,
                                                       "avg_ssim":  0.983647,
                                                       "avg_chroma_psnr":  51.0704,

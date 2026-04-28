@@ -37,9 +37,11 @@ struct SymbolCoding {
 };
 
 struct EncodedCoeffContextStream {
+    bool use_significance_map = false;
     std::vector<uint8_t> presence_bytes;
     std::vector<uint8_t> rans_bytes;
     std::vector<uint8_t> sign_bits;
+    uint8_t sign_mode = kCoefficientSignModeRawPacked;
     size_t active_blocks = 0;
     size_t nonzero_count = 0;
 };
@@ -49,6 +51,16 @@ struct CoeffContextAnalysis {
     size_t active_blocks = 0;
     size_t nonzero_count = 0;
 };
+
+[[nodiscard]] Result<void> write_lossy_coeff_table(ByteWriter& writer,
+                                                   const LossyCoeffTable& table,
+                                                   int num_symbols,
+                                                   const LossyCoeffStreamConfig& config);
+[[nodiscard]] Result<void> write_coeff_context_stream(ByteWriter& writer,
+                                                      const EncodedCoeffContextStream& stream,
+                                                      const LossyCoeffTable& table,
+                                                      const SymbolCoding& coding,
+                                                      const LossyCoeffStreamConfig& config);
 
 [[nodiscard]] SymbolCoding make_symbol_coding(const LossyCoeffStreamConfig& config) {
     SymbolCoding coding;
@@ -91,6 +103,85 @@ struct CoeffContextAnalysis {
     }
 
     return analysis;
+}
+
+[[nodiscard]] Result<void> write_significance_mode_flags(ByteWriter& writer,
+                                                         std::span<const uint8_t> flags) {
+    auto packed = pack_coefficient_presence(flags);
+    if (!packed) {
+        return std::unexpected(packed.error());
+    }
+    writer.write_bytes(*packed);
+    return {};
+}
+
+[[nodiscard]] Result<std::vector<uint8_t>> read_significance_mode_flags(ByteReader& reader,
+                                                                        size_t count) {
+    const size_t packed_size = packed_coefficient_presence_bytes(count);
+    auto packed = reader.read_bytes(packed_size);
+    if (!packed) {
+        return std::unexpected(packed.error());
+    }
+    return unpack_coefficient_presence(*packed, count, "lossy significance mode");
+}
+
+[[nodiscard]] Result<void> write_sign_mode_flags(ByteWriter& writer,
+                                                 std::span<const uint8_t> flags) {
+    auto packed = pack_coefficient_sign_modes(flags);
+    if (!packed) {
+        return std::unexpected(packed.error());
+    }
+    writer.write_bytes(*packed);
+    return {};
+}
+
+[[nodiscard]] Result<std::vector<uint8_t>> read_sign_mode_flags(ByteReader& reader, size_t count) {
+    const size_t packed_size = packed_coefficient_sign_mode_bytes(count);
+    auto packed = reader.read_bytes(packed_size);
+    if (!packed) {
+        return std::unexpected(packed.error());
+    }
+    return unpack_coefficient_sign_modes(*packed, count, "lossy coefficient sign mode");
+}
+
+[[nodiscard]] uint8_t select_sign_mode(std::span<const uint8_t> signs,
+                                       bool use_adaptive_sign_streams) {
+    if (!use_adaptive_sign_streams || signs.empty()) {
+        return kCoefficientSignModeRawPacked;
+    }
+    if (std::all_of(signs.begin(), signs.end(),
+                    [](uint8_t sign) { return sign == 0; })) {
+        return kCoefficientSignModeAllPositive;
+    }
+    if (std::all_of(signs.begin(), signs.end(),
+                    [](uint8_t sign) { return sign == 1; })) {
+        return kCoefficientSignModeAllNegative;
+    }
+    return kCoefficientSignModeRawPacked;
+}
+
+[[nodiscard]] Result<size_t> serialized_coeff_context_stream_size(
+    const EncodedCoeffContextStream& stream,
+    const LossyCoeffTable& table,
+    const SymbolCoding& coding,
+    const LossyCoeffStreamConfig& config) {
+    ByteWriter writer;
+    auto written = write_coeff_context_stream(writer, stream, table, coding, config);
+    if (!written) {
+        return std::unexpected(written.error());
+    }
+    return writer.size();
+}
+
+[[nodiscard]] Result<size_t> serialized_lossy_coeff_table_size(const LossyCoeffTable& table,
+                                                               int num_symbols,
+                                                               const LossyCoeffStreamConfig& config) {
+    ByteWriter writer;
+    auto written = write_lossy_coeff_table(writer, table, num_symbols, config);
+    if (!written) {
+        return std::unexpected(written.error());
+    }
+    return writer.size();
 }
 
 [[nodiscard]] LossyCoeffTable make_single_symbol_table(const SymbolCoding& coding) {
@@ -165,12 +256,14 @@ struct CoeffContextAnalysis {
     const CoeffContextAnalysis& analysis,
     const LossyCoeffTable& table,
     const SymbolCoding& coding,
-    const LossyCoeffStreamConfig& config) {
+    const LossyCoeffStreamConfig& config,
+    bool use_significance_map) {
     EncodedCoeffContextStream stream;
+    stream.use_significance_map = use_significance_map;
     stream.active_blocks = analysis.active_blocks;
-    stream.nonzero_count = config.use_significance_maps ? analysis.nonzero_count : analysis.active_blocks;
+    stream.nonzero_count = use_significance_map ? analysis.nonzero_count : analysis.active_blocks;
 
-    if (config.use_significance_maps && analysis.active_blocks > 0) {
+    if (use_significance_map && analysis.active_blocks > 0) {
         ByteWriter presence_writer;
         auto written = write_adaptive_coefficient_presence(presence_writer, analysis.presence);
         if (!written) {
@@ -196,7 +289,7 @@ struct CoeffContextAnalysis {
                 continue;
             }
             const int value = static_cast<int>(blocks[block_index][coeff_index]);
-            if (config.use_significance_maps && value == 0) {
+            if (use_significance_map && value == 0) {
                 continue;
             }
             encoder.encode(table, coding.encode(value));
@@ -216,11 +309,14 @@ struct CoeffContextAnalysis {
                 signs.push_back(static_cast<uint8_t>(value < 0));
             }
         }
-        auto packed_signs = pack_coefficient_signs(signs);
-        if (!packed_signs) {
-            return std::unexpected(packed_signs.error());
+        stream.sign_mode = select_sign_mode(signs, config.use_adaptive_sign_streams);
+        if (stream.sign_mode == kCoefficientSignModeRawPacked) {
+            auto packed_signs = pack_coefficient_signs(signs);
+            if (!packed_signs) {
+                return std::unexpected(packed_signs.error());
+            }
+            stream.sign_bits = std::move(*packed_signs);
         }
-        stream.sign_bits = std::move(*packed_signs);
     }
 
     return stream;
@@ -232,11 +328,11 @@ struct CoeffContextAnalysis {
     const LossyCoeffTable& table,
     const SymbolCoding& coding,
     const LossyCoeffStreamConfig& config) {
-    if (config.use_significance_maps && stream.active_blocks > 0) {
+    if (stream.use_significance_map && stream.active_blocks > 0) {
         writer.write_bytes(stream.presence_bytes);
     }
     if (stream.nonzero_count == 0) {
-        if (!config.use_significance_maps) {
+        if (!stream.use_significance_map) {
             writer.write_u32(0);
         }
         return {};
@@ -260,6 +356,7 @@ struct CoeffContextAnalysis {
     const SymbolCoding& coding,
     int symbol,
     std::span<const uint8_t> presence,
+    uint8_t sign_mode,
     std::span<DctBlockI16> blocks,
     std::string_view label) {
     const int16_t value = coding.decode(symbol);
@@ -279,6 +376,28 @@ struct CoeffContextAnalysis {
     }
 
     if (coding.split_magnitude_signs && value != 0) {
+        if (sign_mode == kCoefficientSignModeAllPositive) {
+            return present_blocks;
+        }
+        if (sign_mode == kCoefficientSignModeAllNegative) {
+            presence_index = 0;
+            for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+                if (spans[block_index] <= coeff_index) {
+                    continue;
+                }
+                const bool is_present = presence.empty() || presence[presence_index++] != 0;
+                if (!is_present) {
+                    continue;
+                }
+                blocks[block_index][coeff_index] = static_cast<int16_t>(-value);
+            }
+            return present_blocks;
+        }
+        if (sign_mode != kCoefficientSignModeRawPacked) {
+            return std::unexpected(Error{ErrorCode::DecodeFailed,
+                                         "lossy coefficient sign mode is invalid"});
+        }
+
         auto sign_bits = read_packed_coefficient_signs(reader, present_blocks, label);
         if (!sign_bits) {
             return std::unexpected(sign_bits.error());
@@ -311,13 +430,16 @@ struct CoeffContextAnalysis {
     const SymbolCoding& coding,
     std::span<DctBlockI16> blocks,
     std::string_view label,
-    const LossyCoeffStreamConfig& config) {
+    const LossyCoeffStreamConfig& config,
+    bool use_significance_map,
+    uint8_t sign_mode) {
     EncodedCoeffContextStream stream;
     const size_t active_blocks = count_active_blocks(spans, coeff_index);
     stream.active_blocks = active_blocks;
+    stream.use_significance_map = use_significance_map;
 
     if (active_blocks == 0) {
-        if (!config.use_significance_maps) {
+        if (!use_significance_map) {
             auto encoded_size = reader.read_u32();
             if (!encoded_size) {
                 return std::unexpected(encoded_size.error());
@@ -331,7 +453,7 @@ struct CoeffContextAnalysis {
     }
 
     std::vector<uint8_t> presence;
-    if (config.use_significance_maps) {
+    if (use_significance_map) {
         auto presence_read = read_adaptive_coefficient_presence(reader, active_blocks, label);
         if (!presence_read) {
             return std::unexpected(presence_read.error());
@@ -349,7 +471,8 @@ struct CoeffContextAnalysis {
         auto symbol = single_symbol_from_table(table, coding.num_symbols);
         if (symbol) {
             auto decoded = decode_elided_single_symbol_stream(reader, spans, coeff_index, coding,
-                                                              *symbol, presence, blocks, label);
+                                                              *symbol, presence, sign_mode, blocks,
+                                                              label);
             if (!decoded) {
                 return std::unexpected(decoded.error());
             }
@@ -392,27 +515,39 @@ struct CoeffContextAnalysis {
     }
 
     if (coding.split_magnitude_signs) {
-        auto sign_bits = read_packed_coefficient_signs(reader, nonzero_count, label);
-        if (!sign_bits) {
-            return std::unexpected(sign_bits.error());
-        }
+        if (sign_mode == kCoefficientSignModeRawPacked) {
+            auto sign_bits = read_packed_coefficient_signs(reader, nonzero_count, label);
+            if (!sign_bits) {
+                return std::unexpected(sign_bits.error());
+            }
 
-        size_t sign_index = 0;
-        presence_index = 0;
-        for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
-            if (spans[block_index] <= coeff_index) {
-                continue;
+            size_t sign_index = 0;
+            presence_index = 0;
+            for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+                if (spans[block_index] <= coeff_index) {
+                    continue;
+                }
+                if (!presence.empty() && presence[presence_index++] == 0) {
+                    continue;
+                }
+                auto& value = blocks[block_index][coeff_index];
+                if (value == 0) {
+                    continue;
+                }
+                if ((*sign_bits)[sign_index++] != 0) {
+                    value = static_cast<int16_t>(-value);
+                }
             }
-            if (!presence.empty() && presence[presence_index++] == 0) {
-                continue;
+        } else if (sign_mode == kCoefficientSignModeAllNegative) {
+            for (size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+                auto& value = blocks[block_index][coeff_index];
+                if (value > 0) {
+                    value = static_cast<int16_t>(-value);
+                }
             }
-            auto& value = blocks[block_index][coeff_index];
-            if (value == 0) {
-                continue;
-            }
-            if ((*sign_bits)[sign_index++] != 0) {
-                value = static_cast<int16_t>(-value);
-            }
+        } else if (sign_mode != kCoefficientSignModeAllPositive) {
+            return std::unexpected(Error{ErrorCode::DecodeFailed,
+                                         "lossy coefficient sign mode is invalid"});
         }
     }
 
@@ -518,8 +653,21 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
     ByteWriter writer;
     std::vector<LossyCoeffTable> tables;
     std::vector<EncodedCoeffContextStream> streams;
+    std::vector<uint8_t> significance_flags;
+    std::vector<uint8_t> sign_modes;
     tables.reserve(static_cast<size_t>(coeff_limit));
     streams.reserve(static_cast<size_t>(coeff_limit));
+    if (config.use_significance_maps) {
+        significance_flags.reserve(static_cast<size_t>(coeff_limit));
+    }
+    if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+        sign_modes.reserve(static_cast<size_t>(coeff_limit));
+    }
+
+    LossyCoeffStreamConfig raw_config = config;
+    raw_config.use_significance_maps = false;
+    LossyCoeffStreamConfig sparse_config = config;
+    sparse_config.use_significance_maps = true;
 
     for (int coeff_index = 0; coeff_index < coeff_limit; ++coeff_index) {
         const CoeffContextAnalysis analysis =
@@ -528,23 +676,85 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
             tables.push_back(make_single_symbol_table(coding));
             EncodedCoeffContextStream empty_stream;
             streams.push_back(std::move(empty_stream));
+            if (config.use_significance_maps) {
+                significance_flags.push_back(0);
+            }
+            if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+                sign_modes.push_back(kCoefficientSignModeRawPacked);
+            }
             continue;
         }
 
-        auto counts = build_plane_counts(blocks, spans, coeff_index, coding, config.use_significance_maps);
-        LossyCoeffTable table;
-        if (config.use_significance_maps && analysis.nonzero_count == 0) {
-            table = make_single_symbol_table(coding);
-        } else {
-            table.build_from_counts(counts.data(), coding.num_symbols);
+        auto raw_counts = build_plane_counts(blocks, spans, coeff_index, coding, false);
+        LossyCoeffTable raw_table;
+        raw_table.build_from_counts(raw_counts.data(), coding.num_symbols);
+        auto raw_stream = encode_coeff_context_stream(blocks, spans, coeff_index, analysis,
+                                                      raw_table, coding, raw_config, false);
+        if (!raw_stream) {
+            return std::unexpected(raw_stream.error());
         }
-        auto encoded_stream = encode_coeff_context_stream(blocks, spans, coeff_index, analysis,
-                                                          table, coding, config);
-        if (!encoded_stream) {
-            return std::unexpected(encoded_stream.error());
+
+        bool use_sparse_mode = false;
+        LossyCoeffTable selected_table = raw_table;
+        EncodedCoeffContextStream selected_stream = std::move(*raw_stream);
+
+        if (config.use_significance_maps) {
+            auto sparse_counts = build_plane_counts(blocks, spans, coeff_index, coding, true);
+            LossyCoeffTable sparse_table;
+            if (analysis.nonzero_count == 0) {
+                sparse_table = make_single_symbol_table(coding);
+            } else {
+                sparse_table.build_from_counts(sparse_counts.data(), coding.num_symbols);
+            }
+            auto sparse_stream = encode_coeff_context_stream(blocks, spans, coeff_index, analysis,
+                                                             sparse_table, coding, sparse_config, true);
+            if (!sparse_stream) {
+                return std::unexpected(sparse_stream.error());
+            }
+
+            auto raw_table_size = serialized_lossy_coeff_table_size(raw_table, coding.num_symbols, raw_config);
+            if (!raw_table_size) {
+                return std::unexpected(raw_table_size.error());
+            }
+            auto raw_stream_size = serialized_coeff_context_stream_size(*raw_stream, raw_table, coding, raw_config);
+            if (!raw_stream_size) {
+                return std::unexpected(raw_stream_size.error());
+            }
+            auto sparse_table_size = serialized_lossy_coeff_table_size(sparse_table, coding.num_symbols, sparse_config);
+            if (!sparse_table_size) {
+                return std::unexpected(sparse_table_size.error());
+            }
+            auto sparse_stream_size = serialized_coeff_context_stream_size(*sparse_stream, sparse_table, coding, sparse_config);
+            if (!sparse_stream_size) {
+                return std::unexpected(sparse_stream_size.error());
+            }
+
+            use_sparse_mode = *sparse_table_size + *sparse_stream_size < *raw_table_size + *raw_stream_size;
+            if (use_sparse_mode) {
+                selected_table = std::move(sparse_table);
+                selected_stream = std::move(*sparse_stream);
+            }
+            significance_flags.push_back(static_cast<uint8_t>(use_sparse_mode));
         }
-        tables.push_back(std::move(table));
-        streams.push_back(std::move(*encoded_stream));
+
+        tables.push_back(std::move(selected_table));
+        streams.push_back(std::move(selected_stream));
+        if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+            sign_modes.push_back(streams.back().sign_mode);
+        }
+    }
+
+    if (config.use_significance_maps) {
+        auto flag_result = write_significance_mode_flags(writer, significance_flags);
+        if (!flag_result) {
+            return std::unexpected(flag_result.error());
+        }
+    }
+    if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+        auto sign_result = write_sign_mode_flags(writer, sign_modes);
+        if (!sign_result) {
+            return std::unexpected(sign_result.error());
+        }
     }
 
     if (config.use_table_bank) {
@@ -592,9 +802,24 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
     std::vector<LossyCoeffTable> tables;
     std::vector<EncodedCoeffContextStream> cb_streams;
     std::vector<EncodedCoeffContextStream> cr_streams;
+    std::vector<uint8_t> significance_flags;
+    std::vector<uint8_t> cb_sign_modes;
+    std::vector<uint8_t> cr_sign_modes;
     tables.reserve(static_cast<size_t>(coeff_limit));
     cb_streams.reserve(static_cast<size_t>(coeff_limit));
     cr_streams.reserve(static_cast<size_t>(coeff_limit));
+    if (config.use_significance_maps) {
+        significance_flags.reserve(static_cast<size_t>(coeff_limit));
+    }
+    if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+        cb_sign_modes.reserve(static_cast<size_t>(coeff_limit));
+        cr_sign_modes.reserve(static_cast<size_t>(coeff_limit));
+    }
+
+    LossyCoeffStreamConfig raw_config = config;
+    raw_config.use_significance_maps = false;
+    LossyCoeffStreamConfig sparse_config = config;
+    sparse_config.use_significance_maps = true;
 
     for (int coeff_index = 0; coeff_index < coeff_limit; ++coeff_index) {
         const CoeffContextAnalysis cb_analysis =
@@ -606,31 +831,114 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
             EncodedCoeffContextStream empty_stream;
             cb_streams.push_back(empty_stream);
             cr_streams.push_back(std::move(empty_stream));
+            if (config.use_significance_maps) {
+                significance_flags.push_back(0);
+            }
+            if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+                cb_sign_modes.push_back(kCoefficientSignModeRawPacked);
+                cr_sign_modes.push_back(kCoefficientSignModeRawPacked);
+            }
             continue;
         }
 
-        auto counts = build_chroma_counts(cb_blocks, cr_blocks, spans, coeff_index, coding,
-                                          config.use_significance_maps);
-        LossyCoeffTable table;
-        if (config.use_significance_maps &&
-            cb_analysis.nonzero_count + cr_analysis.nonzero_count == 0) {
-            table = make_single_symbol_table(coding);
-        } else {
-            table.build_from_counts(counts.data(), coding.num_symbols);
+        auto raw_counts = build_chroma_counts(cb_blocks, cr_blocks, spans, coeff_index, coding, false);
+        LossyCoeffTable raw_table;
+        raw_table.build_from_counts(raw_counts.data(), coding.num_symbols);
+        auto raw_cb_stream = encode_coeff_context_stream(cb_blocks, spans, coeff_index, cb_analysis,
+                                                         raw_table, coding, raw_config, false);
+        if (!raw_cb_stream) {
+            return std::unexpected(raw_cb_stream.error());
         }
-        auto cb_stream = encode_coeff_context_stream(cb_blocks, spans, coeff_index, cb_analysis,
-                                                     table, coding, config);
-        if (!cb_stream) {
-            return std::unexpected(cb_stream.error());
+        auto raw_cr_stream = encode_coeff_context_stream(cr_blocks, spans, coeff_index, cr_analysis,
+                                                         raw_table, coding, raw_config, false);
+        if (!raw_cr_stream) {
+            return std::unexpected(raw_cr_stream.error());
         }
-        auto cr_stream = encode_coeff_context_stream(cr_blocks, spans, coeff_index, cr_analysis,
-                                                     table, coding, config);
-        if (!cr_stream) {
-            return std::unexpected(cr_stream.error());
+
+        bool use_sparse_mode = false;
+        LossyCoeffTable selected_table = raw_table;
+        EncodedCoeffContextStream selected_cb_stream = std::move(*raw_cb_stream);
+        EncodedCoeffContextStream selected_cr_stream = std::move(*raw_cr_stream);
+
+        if (config.use_significance_maps) {
+            auto sparse_counts = build_chroma_counts(cb_blocks, cr_blocks, spans, coeff_index, coding, true);
+            LossyCoeffTable sparse_table;
+            if (cb_analysis.nonzero_count + cr_analysis.nonzero_count == 0) {
+                sparse_table = make_single_symbol_table(coding);
+            } else {
+                sparse_table.build_from_counts(sparse_counts.data(), coding.num_symbols);
+            }
+            auto sparse_cb_stream = encode_coeff_context_stream(cb_blocks, spans, coeff_index, cb_analysis,
+                                                                sparse_table, coding, sparse_config, true);
+            if (!sparse_cb_stream) {
+                return std::unexpected(sparse_cb_stream.error());
+            }
+            auto sparse_cr_stream = encode_coeff_context_stream(cr_blocks, spans, coeff_index, cr_analysis,
+                                                                sparse_table, coding, sparse_config, true);
+            if (!sparse_cr_stream) {
+                return std::unexpected(sparse_cr_stream.error());
+            }
+
+            auto raw_table_size = serialized_lossy_coeff_table_size(raw_table, coding.num_symbols, raw_config);
+            if (!raw_table_size) {
+                return std::unexpected(raw_table_size.error());
+            }
+            auto raw_cb_stream_size = serialized_coeff_context_stream_size(*raw_cb_stream, raw_table, coding, raw_config);
+            if (!raw_cb_stream_size) {
+                return std::unexpected(raw_cb_stream_size.error());
+            }
+            auto raw_cr_stream_size = serialized_coeff_context_stream_size(*raw_cr_stream, raw_table, coding, raw_config);
+            if (!raw_cr_stream_size) {
+                return std::unexpected(raw_cr_stream_size.error());
+            }
+            auto sparse_table_size = serialized_lossy_coeff_table_size(sparse_table, coding.num_symbols, sparse_config);
+            if (!sparse_table_size) {
+                return std::unexpected(sparse_table_size.error());
+            }
+            auto sparse_cb_stream_size = serialized_coeff_context_stream_size(*sparse_cb_stream, sparse_table, coding, sparse_config);
+            if (!sparse_cb_stream_size) {
+                return std::unexpected(sparse_cb_stream_size.error());
+            }
+            auto sparse_cr_stream_size = serialized_coeff_context_stream_size(*sparse_cr_stream, sparse_table, coding, sparse_config);
+            if (!sparse_cr_stream_size) {
+                return std::unexpected(sparse_cr_stream_size.error());
+            }
+
+            use_sparse_mode =
+                *sparse_table_size + *sparse_cb_stream_size + *sparse_cr_stream_size <
+                *raw_table_size + *raw_cb_stream_size + *raw_cr_stream_size;
+            if (use_sparse_mode) {
+                selected_table = std::move(sparse_table);
+                selected_cb_stream = std::move(*sparse_cb_stream);
+                selected_cr_stream = std::move(*sparse_cr_stream);
+            }
+            significance_flags.push_back(static_cast<uint8_t>(use_sparse_mode));
         }
-        tables.push_back(std::move(table));
-        cb_streams.push_back(std::move(*cb_stream));
-        cr_streams.push_back(std::move(*cr_stream));
+
+        tables.push_back(std::move(selected_table));
+        cb_streams.push_back(std::move(selected_cb_stream));
+        cr_streams.push_back(std::move(selected_cr_stream));
+        if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+            cb_sign_modes.push_back(cb_streams.back().sign_mode);
+            cr_sign_modes.push_back(cr_streams.back().sign_mode);
+        }
+    }
+
+    if (config.use_significance_maps) {
+        auto flag_result = write_significance_mode_flags(writer, significance_flags);
+        if (!flag_result) {
+            return std::unexpected(flag_result.error());
+        }
+    }
+    if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+        auto cb_sign_result = write_sign_mode_flags(writer, cb_sign_modes);
+        if (!cb_sign_result) {
+            return std::unexpected(cb_sign_result.error());
+        }
+        auto cr_sign_result = write_sign_mode_flags(writer, cr_sign_modes);
+        if (!cr_sign_result) {
+            return std::unexpected(cr_sign_result.error());
+        }
     }
 
     if (config.use_table_bank) {
@@ -674,6 +982,23 @@ Result<std::vector<DctBlockI16>> decode_lossy_plane_payload(
     const SymbolCoding coding = make_symbol_coding(config);
     const int coeff_limit = coefficient_limit(max_coeff_span, config);
     std::vector<DctBlockI16> blocks(spans.size());
+    std::vector<uint8_t> significance_flags(static_cast<size_t>(coeff_limit), 0);
+    std::vector<uint8_t> sign_modes(static_cast<size_t>(coeff_limit), kCoefficientSignModeRawPacked);
+
+    if (config.use_significance_maps) {
+        auto flags = read_significance_mode_flags(reader, static_cast<size_t>(coeff_limit));
+        if (!flags) {
+            return std::unexpected(flags.error());
+        }
+        significance_flags = std::move(*flags);
+    }
+    if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+        auto flags = read_sign_mode_flags(reader, static_cast<size_t>(coeff_limit));
+        if (!flags) {
+            return std::unexpected(flags.error());
+        }
+        sign_modes = std::move(*flags);
+    }
 
     if (config.use_table_bank) {
         auto tables = read_coefficient_table_bank(reader, static_cast<size_t>(coeff_limit),
@@ -684,7 +1009,9 @@ Result<std::vector<DctBlockI16>> decode_lossy_plane_payload(
         for (int coeff_index = 0; coeff_index < coeff_limit; ++coeff_index) {
             auto stream = read_coeff_context_stream(reader, spans, coeff_index,
                                                     (*tables)[static_cast<size_t>(coeff_index)],
-                                                    coding, blocks, "lossy", config);
+                                                    coding, blocks, "lossy", config,
+                                                    significance_flags[static_cast<size_t>(coeff_index)] != 0,
+                                                    sign_modes[static_cast<size_t>(coeff_index)]);
             if (!stream) {
                 return std::unexpected(stream.error());
             }
@@ -697,7 +1024,10 @@ Result<std::vector<DctBlockI16>> decode_lossy_plane_payload(
         if (!table) {
             return std::unexpected(table.error());
         }
-        auto stream = read_coeff_context_stream(reader, spans, coeff_index, *table, coding, blocks, "lossy", config);
+        auto stream = read_coeff_context_stream(reader, spans, coeff_index, *table, coding,
+                                                blocks, "lossy", config,
+                                                significance_flags[static_cast<size_t>(coeff_index)] != 0,
+                                                sign_modes[static_cast<size_t>(coeff_index)]);
         if (!stream) {
             return std::unexpected(stream.error());
         }
@@ -717,6 +1047,30 @@ Result<DecodedLossyChromaPayload> decode_lossy_chroma_payload(
     }
     const SymbolCoding coding = make_symbol_coding(config);
     const int coeff_limit = coefficient_limit(max_coeff_span, config);
+    std::vector<uint8_t> significance_flags(static_cast<size_t>(coeff_limit), 0);
+    std::vector<uint8_t> cb_sign_modes(static_cast<size_t>(coeff_limit), kCoefficientSignModeRawPacked);
+    std::vector<uint8_t> cr_sign_modes(static_cast<size_t>(coeff_limit), kCoefficientSignModeRawPacked);
+
+    if (config.use_significance_maps) {
+        auto flags = read_significance_mode_flags(reader, static_cast<size_t>(coeff_limit));
+        if (!flags) {
+            return std::unexpected(flags.error());
+        }
+        significance_flags = std::move(*flags);
+    }
+    if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
+        auto cb_flags = read_sign_mode_flags(reader, static_cast<size_t>(coeff_limit));
+        if (!cb_flags) {
+            return std::unexpected(cb_flags.error());
+        }
+        cb_sign_modes = std::move(*cb_flags);
+
+        auto cr_flags = read_sign_mode_flags(reader, static_cast<size_t>(coeff_limit));
+        if (!cr_flags) {
+            return std::unexpected(cr_flags.error());
+        }
+        cr_sign_modes = std::move(*cr_flags);
+    }
 
     DecodedLossyChromaPayload payload;
     payload.cb_blocks.resize(spans.size());
@@ -731,13 +1085,17 @@ Result<DecodedLossyChromaPayload> decode_lossy_chroma_payload(
         for (int coeff_index = 0; coeff_index < coeff_limit; ++coeff_index) {
             const auto& table = (*tables)[static_cast<size_t>(coeff_index)];
             auto cb_stream = read_coeff_context_stream(reader, spans, coeff_index, table, coding,
-                                                       payload.cb_blocks, "lossy", config);
+                                                       payload.cb_blocks, "lossy", config,
+                                                       significance_flags[static_cast<size_t>(coeff_index)] != 0,
+                                                       cb_sign_modes[static_cast<size_t>(coeff_index)]);
             if (!cb_stream) {
                 return std::unexpected(cb_stream.error());
             }
 
             auto cr_stream = read_coeff_context_stream(reader, spans, coeff_index, table, coding,
-                                                       payload.cr_blocks, "lossy", config);
+                                                       payload.cr_blocks, "lossy", config,
+                                                       significance_flags[static_cast<size_t>(coeff_index)] != 0,
+                                                       cr_sign_modes[static_cast<size_t>(coeff_index)]);
             if (!cr_stream) {
                 return std::unexpected(cr_stream.error());
             }
@@ -752,13 +1110,17 @@ Result<DecodedLossyChromaPayload> decode_lossy_chroma_payload(
         }
 
         auto cb_stream = read_coeff_context_stream(reader, spans, coeff_index, *table, coding,
-                                                   payload.cb_blocks, "lossy", config);
+                                                   payload.cb_blocks, "lossy", config,
+                                                   significance_flags[static_cast<size_t>(coeff_index)] != 0,
+                                                   cb_sign_modes[static_cast<size_t>(coeff_index)]);
         if (!cb_stream) {
             return std::unexpected(cb_stream.error());
         }
 
         auto cr_stream = read_coeff_context_stream(reader, spans, coeff_index, *table, coding,
-                                                   payload.cr_blocks, "lossy", config);
+                                                   payload.cr_blocks, "lossy", config,
+                                                   significance_flags[static_cast<size_t>(coeff_index)] != 0,
+                                                   cr_sign_modes[static_cast<size_t>(coeff_index)]);
         if (!cr_stream) {
             return std::unexpected(cr_stream.error());
         }

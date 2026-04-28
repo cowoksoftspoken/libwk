@@ -1174,9 +1174,91 @@ static Result<TileEncodeResult> encode_lossy_tile(
     const auto& final_shared_chroma_payload = use_coefficient_significance_maps
         ? *shared_significance_chroma_payload
         : current_shared_chroma_payload;
+    const size_t significance_selected_coeff_payload_bytes = use_coefficient_significance_maps
+        ? significance_coeff_payload_bytes
+        : current_coeff_payload_bytes;
 
-    if (use_adaptive_span_streams || use_split_magnitude_signs || use_shared_chroma_coeff_tables ||
-        use_coefficient_table_bank || use_elide_single_symbol_streams || use_coefficient_significance_maps) {
+    bool use_adaptive_coefficient_signs = false;
+    Result<std::vector<uint8_t>> y_sign_mode_coeff_payload = std::vector<uint8_t>{};
+    Result<std::vector<uint8_t>> cb_sign_mode_coeff_payload = std::vector<uint8_t>{};
+    Result<std::vector<uint8_t>> cr_sign_mode_coeff_payload = std::vector<uint8_t>{};
+    Result<std::vector<uint8_t>> alpha_sign_mode_coeff_payload = std::vector<uint8_t>{};
+    Result<std::vector<uint8_t>> shared_sign_mode_chroma_payload = std::vector<uint8_t>{};
+    bool sign_modes_use_shared_chroma_coeff_tables = use_shared_chroma_coeff_tables;
+
+    if (use_split_magnitude_signs) {
+        LossyCoeffStreamConfig sign_mode_coeff_config = selected_coeff_config;
+        sign_mode_coeff_config.use_table_bank = use_coefficient_table_bank;
+        sign_mode_coeff_config.elide_single_symbol_streams = use_elide_single_symbol_streams;
+        sign_mode_coeff_config.use_significance_maps = use_coefficient_significance_maps;
+        sign_mode_coeff_config.use_adaptive_sign_streams = true;
+
+        y_sign_mode_coeff_payload = encode_lossy_plane_payload(
+            y_quantized_blocks, y_spans, y_max_coeff_span, sign_mode_coeff_config);
+        if (!y_sign_mode_coeff_payload) {
+            return std::unexpected(y_sign_mode_coeff_payload.error());
+        }
+        cb_sign_mode_coeff_payload = encode_lossy_plane_payload(
+            cb_quantized_blocks, chroma_spans, chroma_max_coeff_span, sign_mode_coeff_config);
+        if (!cb_sign_mode_coeff_payload) {
+            return std::unexpected(cb_sign_mode_coeff_payload.error());
+        }
+        cr_sign_mode_coeff_payload = encode_lossy_plane_payload(
+            cr_quantized_blocks, chroma_spans, chroma_max_coeff_span, sign_mode_coeff_config);
+        if (!cr_sign_mode_coeff_payload) {
+            return std::unexpected(cr_sign_mode_coeff_payload.error());
+        }
+        if (has_alpha) {
+            alpha_sign_mode_coeff_payload = encode_lossy_plane_payload(
+                a_quantized_blocks, alpha_spans, alpha_max_coeff_span, sign_mode_coeff_config);
+            if (!alpha_sign_mode_coeff_payload) {
+                return std::unexpected(alpha_sign_mode_coeff_payload.error());
+            }
+        }
+        shared_sign_mode_chroma_payload = encode_lossy_chroma_payload(
+            cb_quantized_blocks, cr_quantized_blocks, chroma_spans, chroma_max_coeff_span,
+            sign_mode_coeff_config);
+        if (!shared_sign_mode_chroma_payload) {
+            return std::unexpected(shared_sign_mode_chroma_payload.error());
+        }
+
+        sign_modes_use_shared_chroma_coeff_tables =
+            shared_sign_mode_chroma_payload->size() <
+            cb_sign_mode_coeff_payload->size() + cr_sign_mode_coeff_payload->size();
+        const size_t sign_mode_chroma_coeff_payload_bytes = sign_modes_use_shared_chroma_coeff_tables
+            ? shared_sign_mode_chroma_payload->size()
+            : (cb_sign_mode_coeff_payload->size() + cr_sign_mode_coeff_payload->size());
+        const size_t sign_mode_coeff_payload_bytes =
+            y_sign_mode_coeff_payload->size() +
+            sign_mode_chroma_coeff_payload_bytes +
+            (has_alpha ? alpha_sign_mode_coeff_payload->size() : 0u) +
+            1u;
+        use_adaptive_coefficient_signs =
+            sign_mode_coeff_payload_bytes < significance_selected_coeff_payload_bytes;
+    }
+
+    const bool final_use_shared_chroma_coeff_tables = use_adaptive_coefficient_signs
+        ? sign_modes_use_shared_chroma_coeff_tables
+        : use_shared_chroma_coeff_tables;
+    const auto& final_y_payload = use_adaptive_coefficient_signs
+        ? *y_sign_mode_coeff_payload
+        : final_y_coeff_payload;
+    const auto& final_alpha_payload = use_adaptive_coefficient_signs
+        ? *alpha_sign_mode_coeff_payload
+        : final_alpha_coeff_payload;
+    const auto& final_independent_cb_coeff_payload = use_adaptive_coefficient_signs
+        ? *cb_sign_mode_coeff_payload
+        : final_independent_cb_payload;
+    const auto& final_independent_cr_coeff_payload = use_adaptive_coefficient_signs
+        ? *cr_sign_mode_coeff_payload
+        : final_independent_cr_payload;
+    const auto& final_shared_chroma_coeff_payload = use_adaptive_coefficient_signs
+        ? *shared_sign_mode_chroma_payload
+        : final_shared_chroma_payload;
+
+    if (use_adaptive_span_streams || use_split_magnitude_signs || final_use_shared_chroma_coeff_tables ||
+        use_coefficient_table_bank || use_elide_single_symbol_streams ||
+        use_coefficient_significance_maps || use_adaptive_coefficient_signs) {
         uint8_t syntax_flags = 0;
         if (use_adaptive_span_streams) {
             syntax_flags |= kLossyTileSyntaxFlagAdaptiveSpanStreams;
@@ -1187,7 +1269,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
         if (use_split_magnitude_signs) {
             syntax_flags |= kLossyTileSyntaxFlagSplitMagnitudeSigns;
         }
-        if (use_shared_chroma_coeff_tables) {
+        if (final_use_shared_chroma_coeff_tables) {
             syntax_flags |= kLossyTileSyntaxFlagSharedChromaCoeffTables;
         }
         if (use_coefficient_table_bank) {
@@ -1198,6 +1280,9 @@ static Result<TileEncodeResult> encode_lossy_tile(
         }
         if (use_coefficient_significance_maps) {
             syntax_flags |= kLossyTileSyntaxFlagCoefficientSignificanceMaps;
+        }
+        if (use_adaptive_coefficient_signs) {
+            syntax_flags |= kLossyTileSyntaxFlagAdaptiveCoefficientSigns;
         }
         tile_writer.write_u32(kLossyTileLayoutTagV6);
         tile_writer.write_u8(syntax_flags);
@@ -1245,12 +1330,12 @@ static Result<TileEncodeResult> encode_lossy_tile(
         tile_writer.write_u8(chroma_max_coeff_span);
     }
 
-    tile_writer.write_bytes(final_y_coeff_payload);
-    if (use_shared_chroma_coeff_tables) {
-        tile_writer.write_bytes(final_shared_chroma_payload);
+    tile_writer.write_bytes(final_y_payload);
+    if (final_use_shared_chroma_coeff_tables) {
+        tile_writer.write_bytes(final_shared_chroma_coeff_payload);
     } else {
-        tile_writer.write_bytes(final_independent_cb_payload);
-        tile_writer.write_bytes(final_independent_cr_payload);
+        tile_writer.write_bytes(final_independent_cb_coeff_payload);
+        tile_writer.write_bytes(final_independent_cr_coeff_payload);
     }
 
     if (has_alpha) {
@@ -1268,7 +1353,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
         if (use_plane_max_coeff_spans) {
             tile_writer.write_u8(alpha_max_coeff_span);
         }
-        tile_writer.write_bytes(final_alpha_coeff_payload);
+        tile_writer.write_bytes(final_alpha_payload);
     }
 
     float score = compute_quality_score(tile_y_data.data(), reconstructed_y.data(), tw, th, max_val);

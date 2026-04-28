@@ -63,7 +63,8 @@ TEST(LossyCoeffStreamTest, PlanePayloadRoundTripsAcrossTableModes) {
                                     .split_magnitude_signs = true,
                                     .use_table_bank = true,
                                     .elide_single_symbol_streams = true,
-                                    .use_significance_maps = true},
+                                    .use_significance_maps = true,
+                                    .use_adaptive_sign_streams = true},
              LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = true,
@@ -121,7 +122,8 @@ TEST(LossyCoeffStreamTest, SharedChromaPayloadRoundTripsAcrossTableModes) {
                                     .split_magnitude_signs = true,
                                     .use_table_bank = true,
                                     .elide_single_symbol_streams = true,
-                                    .use_significance_maps = true},
+                                    .use_significance_maps = true,
+                                    .use_adaptive_sign_streams = true},
              LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = true,
@@ -250,6 +252,52 @@ TEST(LossyCoeffStreamTest, SignificanceMapsShrinkSparseSplitPayload) {
 
     ByteReader reader(*significance_payload);
     auto decoded = decode_lossy_plane_payload(reader, spans, 3, significance_config);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+    expect_blocks_equal(*decoded, blocks);
+}
+
+TEST(LossyCoeffStreamTest, AdaptiveSignModesShrinkUniformSignPayload) {
+    const std::array<DctBlockI16, 12> blocks = {
+        make_block({{0, 12}, {1, 3}, {2, 1}}),
+        make_block({{0, 11}, {1, 2}, {2, 1}}),
+        make_block({{0, 10}, {1, 3}}),
+        make_block({{0, 9}, {1, 2}}),
+        make_block({{0, 8}, {1, 3}}),
+        make_block({{0, 7}, {1, 2}}),
+        make_block({{0, 6}, {1, 3}}),
+        make_block({{0, 5}, {1, 2}}),
+        make_block({{0, 4}, {1, 3}}),
+        make_block({{0, 3}, {1, 2}}),
+        make_block({{0, 2}, {1, 3}}),
+        make_block({{0, 1}, {1, 2}})
+    };
+    const std::array<uint8_t, 12> spans = {3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+
+    const LossyCoeffStreamConfig base_config{
+        .use_plane_max_coeff_span = true,
+        .adaptive_coefficient_tables = true,
+        .split_magnitude_signs = true,
+        .use_table_bank = true,
+        .elide_single_symbol_streams = true,
+    };
+    const LossyCoeffStreamConfig adaptive_sign_config{
+        .use_plane_max_coeff_span = true,
+        .adaptive_coefficient_tables = true,
+        .split_magnitude_signs = true,
+        .use_table_bank = true,
+        .elide_single_symbol_streams = true,
+        .use_adaptive_sign_streams = true,
+    };
+
+    auto base_payload = encode_lossy_plane_payload(blocks, spans, 3, base_config);
+    ASSERT_TRUE(base_payload.has_value()) << base_payload.error().message;
+    auto adaptive_payload = encode_lossy_plane_payload(blocks, spans, 3, adaptive_sign_config);
+    ASSERT_TRUE(adaptive_payload.has_value()) << adaptive_payload.error().message;
+
+    EXPECT_LT(adaptive_payload->size(), base_payload->size());
+
+    ByteReader reader(*adaptive_payload);
+    auto decoded = decode_lossy_plane_payload(reader, spans, 3, adaptive_sign_config);
     ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
     expect_blocks_equal(*decoded, blocks);
 }

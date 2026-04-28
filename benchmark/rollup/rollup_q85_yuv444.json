@@ -5,7 +5,7 @@
     "overall":  {
                     "key":  "overall",
                     "count":  6,
-                    "total_wk_bytes":  2030825,
+                    "total_wk_bytes":  2028753,
                     "avg_psnr":  40.3258,
                     "avg_ssim":  0.977156,
                     "avg_chroma_psnr":  50.6497,
@@ -16,7 +16,7 @@
                            {
                                "key":  "people",
                                "count":  3,
-                               "total_wk_bytes":  116588,
+                               "total_wk_bytes":  115555,
                                "avg_psnr":  40.8146,
                                "avg_ssim":  0.987659,
                                "avg_chroma_psnr":  52.4251,
@@ -26,7 +26,7 @@
                            {
                                "key":  "scenery",
                                "count":  3,
-                               "total_wk_bytes":  1914237,
+                               "total_wk_bytes":  1913198,
                                "avg_psnr":  39.837,
                                "avg_ssim":  0.966654,
                                "avg_chroma_psnr":  48.8743,
@@ -38,7 +38,7 @@
                                {
                                    "key":  "balanced",
                                    "count":  4,
-                                   "total_wk_bytes":  1525453,
+                                   "total_wk_bytes":  1524004,
                                    "avg_psnr":  40.5132,
                                    "avg_ssim":  0.985804,
                                    "avg_chroma_psnr":  51.2465,
@@ -48,7 +48,7 @@
                                {
                                    "key":  "bright",
                                    "count":  2,
-                                   "total_wk_bytes":  505372,
+                                   "total_wk_bytes":  504749,
                                    "avg_psnr":  39.9508,
                                    "avg_ssim":  0.959861,
                                    "avg_chroma_psnr":  49.4561,
@@ -63,7 +63,7 @@
                                       "summary":  {
                                                       "key":  "people|balanced",
                                                       "count":  2,
-                                                      "total_wk_bytes":  52106,
+                                                      "total_wk_bytes":  51696,
                                                       "avg_psnr":  39.8814,
                                                       "avg_ssim":  0.987962,
                                                       "avg_chroma_psnr":  51.4226,
@@ -77,7 +77,7 @@
                                       "summary":  {
                                                       "key":  "people|bright",
                                                       "count":  1,
-                                                      "total_wk_bytes":  64482,
+                                                      "total_wk_bytes":  63859,
                                                       "avg_psnr":  42.6811,
                                                       "avg_ssim":  0.987054,
                                                       "avg_chroma_psnr":  54.4301,
@@ -91,7 +91,7 @@
                                       "summary":  {
                                                       "key":  "scenery|balanced",
                                                       "count":  2,
-                                                      "total_wk_bytes":  1473347,
+                                                      "total_wk_bytes":  1472308,
                                                       "avg_psnr":  41.1452,
                                                       "avg_ssim":  0.983647,
                                                       "avg_chroma_psnr":  51.0704,

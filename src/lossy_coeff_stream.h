@@ -12,6 +12,7 @@ struct LossyCoeffStreamConfig {
     bool use_table_bank = false;
     bool elide_single_symbol_streams = false;
     bool use_significance_maps = false;
+    bool use_adaptive_sign_streams = false;
 };
 
 struct DecodedLossyChromaPayload {

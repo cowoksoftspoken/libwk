@@ -219,7 +219,8 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
                               kLossyTileSyntaxFlagSharedChromaCoeffTables |
                               kLossyTileSyntaxFlagCoefficientTableBank |
                               kLossyTileSyntaxFlagElideSingleSymbolStreams |
-                              kLossyTileSyntaxFlagCoefficientSignificanceMaps)) != 0) {
+                              kLossyTileSyntaxFlagCoefficientSignificanceMaps |
+                              kLossyTileSyntaxFlagAdaptiveCoefficientSigns)) != 0) {
             return std::unexpected(Error{ErrorCode::DecodeFailed, "lossy tile syntax flags are invalid"});
         }
     }
@@ -235,6 +236,8 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         (syntax_flags & kLossyTileSyntaxFlagElideSingleSymbolStreams) != 0;
     const bool coefficient_significance_maps = *layout_tag == kLossyTileLayoutTagV6 &&
         (syntax_flags & kLossyTileSyntaxFlagCoefficientSignificanceMaps) != 0;
+    const bool adaptive_coefficient_signs = *layout_tag == kLossyTileLayoutTagV6 &&
+        (syntax_flags & kLossyTileSyntaxFlagAdaptiveCoefficientSigns) != 0;
     const bool explicit_plane_max_coeff_spans = *layout_tag == kLossyTileLayoutTagV5 ||
         (*layout_tag == kLossyTileLayoutTagV6 &&
          (syntax_flags & kLossyTileSyntaxFlagPlaneCoeffExtents) != 0);
@@ -336,6 +339,7 @@ Result<TileDecodeResult> decode_lossy_tile(std::span<const uint8_t> tile_data,
         .use_table_bank = coefficient_table_bank,
         .elide_single_symbol_streams = elide_single_symbol_streams,
         .use_significance_maps = coefficient_significance_maps,
+        .use_adaptive_sign_streams = adaptive_coefficient_signs,
     };
 
     auto y_coeffs = decode_lossy_plane_payload(reader, y_spans, y_max_coeff_span, coeff_config);

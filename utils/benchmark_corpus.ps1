@@ -117,10 +117,14 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $PhotosRoot = Join-Path $RepoRoot "photos"
 $InputRoot = Join-Path $RepoRoot $InputDir
 $wkenc = Join-Path $RepoRoot "build\wkenc.exe"
+$wkdec = Join-Path $RepoRoot "build\wkdec.exe"
 $wkmetric = Join-Path $RepoRoot "build\wkmetric.exe"
 
 if (!(Test-Path $wkenc)) {
     throw "wkenc.exe not found at $wkenc"
+}
+if (!(Test-Path $wkdec)) {
+    throw "wkdec.exe not found at $wkdec"
 }
 if (!(Test-Path $wkmetric)) {
     throw "wkmetric.exe not found at $wkmetric"
@@ -136,7 +140,9 @@ if ($photos.Count -eq 0) {
     throw "No .jpg/.jpeg files found in $InputDir"
 }
 
-New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot $OutputDir) | Out-Null
+$OutputRoot = Join-Path $RepoRoot $OutputDir
+New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $OutputRoot "rollup") | Out-Null
 $formatSuffix = if ($FormatFilter -eq "any") { "" } else { "_src$FormatFilter" }
 $profile = if ($Lossless) { "lossless$formatSuffix" } else { "q$([int][Math]::Round($Quality))_yuv$Subsampling$formatSuffix" }
 $rows = @()
@@ -153,8 +159,16 @@ foreach ($photo in $photos) {
     }
 
     $sceneGroup = Get-SceneGroup $photo.FullName $PhotosRoot $InputRoot
-    $outputStem = Get-OutputStem (Get-PortablePath (Get-RelativePath $InputRoot $photo.FullName))
-    $output = Join-Path (Join-Path $RepoRoot $OutputDir) ("{0}_{1}.wk" -f $outputStem, $profile)
+    $groupRoot = Join-Path $OutputRoot $sceneGroup
+    $encodedDir = Join-Path $groupRoot "encoded"
+    $decodedDir = Join-Path $groupRoot "decoded"
+    $groupSummaryDir = Join-Path $groupRoot "summary"
+    $groupRollupDir = Join-Path $groupRoot "rollup"
+    New-Item -ItemType Directory -Force -Path $encodedDir, $decodedDir, $groupSummaryDir, $groupRollupDir | Out-Null
+
+    $outputStem = Get-OutputStem $photo.Name
+    $output = Join-Path $encodedDir ("{0}_{1}.wk" -f $outputStem, $profile)
+    $decoded = Join-Path $decodedDir ("{0}_{1}.png" -f $outputStem, $profile)
     $args = @()
     if ($Lossless) {
         $args += "--lossless"
@@ -175,6 +189,11 @@ foreach ($photo in $photos) {
         throw "wkenc failed for $relativePath"
     }
 
+    & $wkdec $output $decoded
+    if ($LASTEXITCODE -ne 0) {
+        throw "wkdec failed for $relativePath"
+    }
+
     $json = & $wkmetric --json $photo.FullName $output
     if ($LASTEXITCODE -ne 0) {
         throw "wkmetric failed for $relativePath"
@@ -191,6 +210,7 @@ foreach ($photo in $photos) {
         declared_format = $declaredFormat
         detected_format = $signatureFormat
         output_file = (Get-PortablePath (Get-RelativePath $RepoRoot $output))
+        decoded_file = (Get-PortablePath (Get-RelativePath $RepoRoot $decoded))
         source_bytes = [int64]$metric.reference_bytes
         wk_bytes = [int64]$metric.candidate_bytes
         size_ratio = [Math]::Round([double]$metric.size_ratio, 4)
@@ -216,9 +236,6 @@ if ($rows.Count -eq 0) {
     throw "No input files matched FormatFilter=$FormatFilter"
 }
 
-$summaryPath = Join-Path (Join-Path $RepoRoot $OutputDir) ("summary_{0}.json" -f $profile)
-$rows | ConvertTo-Json -Depth 4 | Set-Content -Path $summaryPath -Encoding utf8
-
 $sceneRollups = @($rows | Group-Object scene_group | Sort-Object Name | ForEach-Object { New-Rollup $_.Name $_.Group })
 $lightingRollups = @($rows | Group-Object lighting_bucket | Sort-Object Name | ForEach-Object { New-Rollup $_.Name $_.Group })
 $sceneLightingRollups = @(
@@ -243,11 +260,41 @@ $rollup = [pscustomobject]@{
     by_lighting_bucket = $lightingRollups
     by_scene_and_lighting = $sceneLightingRollups
 }
-$rollupPath = Join-Path (Join-Path $RepoRoot $OutputDir) ("rollup_{0}.json" -f $profile)
+$rollupPath = Join-Path (Join-Path $OutputRoot "rollup") ("rollup_{0}.json" -f $profile)
 $rollup | ConvertTo-Json -Depth 6 | Set-Content -Path $rollupPath -Encoding utf8
+
+foreach ($sceneGroup in ($rows | Select-Object -ExpandProperty scene_group -Unique | Sort-Object)) {
+    $groupRows = @($rows | Where-Object { $_.scene_group -eq $sceneGroup })
+    $groupRoot = Join-Path $OutputRoot $sceneGroup
+    $groupSummaryPath = Join-Path (Join-Path $groupRoot "summary") ("summary_{0}.json" -f $profile)
+    $groupRows | ConvertTo-Json -Depth 4 | Set-Content -Path $groupSummaryPath -Encoding utf8
+
+    $groupRollup = [pscustomobject]@{
+        profile = $profile
+        input_dir = $InputDir
+        total_images = $groupRows.Count
+        overall = New-Rollup $sceneGroup $groupRows
+        by_scene_group = @((New-Rollup $sceneGroup $groupRows))
+        by_lighting_bucket = @($groupRows | Group-Object lighting_bucket | Sort-Object Name | ForEach-Object { New-Rollup $_.Name $_.Group })
+        by_scene_and_lighting = @(
+            $groupRows |
+                Group-Object { "$($_.scene_group)|$($_.lighting_bucket)" } |
+                Sort-Object Name |
+                ForEach-Object {
+                    $parts = $_.Name -split '\|', 2
+                    [pscustomobject]@{
+                        scene_group = $parts[0]
+                        lighting_bucket = $parts[1]
+                        summary = New-Rollup $_.Name $_.Group
+                    }
+                }
+        )
+    }
+    $groupRollupPath = Join-Path (Join-Path $groupRoot "rollup") ("rollup_{0}.json" -f $profile)
+    $groupRollup | ConvertTo-Json -Depth 6 | Set-Content -Path $groupRollupPath -Encoding utf8
+}
 
 $rows |
     Select-Object relative_path, scene_group, lighting_bucket, wk_bytes, psnr, ssim, chroma_psnr, @{ Name = 'w_chroma'; Expression = { $_.weighted_chroma_mae } } |
     Format-Table -AutoSize
-Write-Host "Saved summary to $summaryPath"
 Write-Host "Saved rollup to $rollupPath"

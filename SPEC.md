@@ -98,7 +98,7 @@ FILE HEADER (magic + version)
    - Layout tag `0x334D4843` keeps the packed prediction mode streams and additionally stores packed coefficient-span streams.
    - Layout tag `0x344D4843` keeps the packed prediction modes and coefficient spans, and switches coefficient-table metadata to adaptive serialization.
    - Layout tag `0x354D4843` keeps packed modes, coefficient spans, adaptive coefficient tables, and additionally stores per-plane maximum coefficient extents so fully empty high-frequency contexts can be omitted.
-   - Layout tag `0x364D4843` stores one `uint8` syntax-flags field after the layout tag. Bit `0` enables adaptive coefficient-span stream encodings, bit `1` enables per-plane maximum coefficient extents, bit `2` enables split magnitude/sign coefficient coding, bit `3` enables shared chroma coefficient tables, bit `4` enables coefficient-table bank signaling, bit `5` enables single-symbol coefficient-stream elision, and bit `6` enables coefficient significance maps.
+   - Layout tag `0x364D4843` stores one `uint8` syntax-flags field after the layout tag. Bit `0` enables adaptive coefficient-span stream encodings, bit `1` enables per-plane maximum coefficient extents, bit `2` enables split magnitude/sign coefficient coding, bit `3` enables shared chroma coefficient tables, bit `4` enables coefficient-table bank signaling, bit `5` enables single-symbol coefficient-stream elision, bit `6` enables coefficient significance maps, and bit `7` enables adaptive coefficient sign modes.
    - Layout tag `0x314D4843` is the legacy layout and stores one `uint8` prediction mode per block.
    - One stream is stored for luma blocks and one stream is stored for chroma blocks.
 5. **Coefficient span streams**:
@@ -137,6 +137,12 @@ FILE HEADER (magic + version)
      - `0`: all active coefficients are zero
      - `1`: all active coefficients are non-zero
      - `2`: raw packed 1-bit presence flags in block decode order
+   - If syntax flag bit `7` is set and syntax flag bit `2` is also set, each coefficient payload stores packed 2-bit sign-mode flags before any tables:
+     - plane payloads store one mode stream for the luma or alpha coefficient contexts
+     - shared chroma payloads store one mode stream for Cb contexts and one for Cr contexts
+     - `0`: raw packed sign bits follow the magnitude stream
+     - `1`: all decoded non-zero magnitudes are positive, so no sign payload bytes are stored
+     - `2`: all decoded non-zero magnitudes are negative, so no sign payload bytes are stored
 7. **rANS-coded coefficients**:
    - Legacy signed coding stores symbols in the range `[-1024, 1024]` mapped to `[0, 2048]`.
    - If layout tag `0x364D4843` sets syntax flag bit `2`, each coefficient context stores magnitude symbols in the range `[0, 1024]`, then stores packed sign bits for the non-zero magnitudes in block decode order.
@@ -146,6 +152,7 @@ FILE HEADER (magic + version)
      - signed mode reconstructs that symbol for every active block with no explicit rANS stream bytes
      - split magnitude/sign mode reconstructs the shared magnitude for every active block, then reads packed sign bits only when the magnitude is non-zero
    - If syntax flag bit `6` is set, the entropy stream encodes only coefficients whose presence bit is `1`; zero-valued active blocks are reconstructed from the presence stream without consuming rANS symbols.
+   - If syntax flag bit `7` is set and syntax flag bit `2` is also set, the sign-mode flags can suppress the packed sign payload entirely for contexts whose non-zero magnitudes are all positive or all negative.
 8. **Optional alpha extension**: present when `layer_flags & 0x04` is set. The extension stores 64 x uint16 alpha quantization steps, then an alpha prediction mode stream using the same layout-tag-defined signaling, then an alpha coefficient-span stream when the layout tag is `0x334D4843`, `0x344D4843`, `0x354D4843`, or `0x364D4843`, then an alpha maximum coefficient extent when the layout tag is `0x354D4843` or when layout tag `0x364D4843` has syntax flag bit `1` set, then one rANS-coded coefficient stream per coefficient position on the full-resolution alpha grid.
 
 ### 3.3 Lossless Tile Payload

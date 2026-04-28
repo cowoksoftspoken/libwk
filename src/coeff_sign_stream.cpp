@@ -10,6 +10,12 @@ namespace {
                      " coefficient sign value " + std::to_string(sign_value)};
 }
 
+[[nodiscard]] Error invalid_sign_mode_error(std::string_view label, uint8_t mode_value) {
+    return Error{ErrorCode::DecodeFailed,
+                 std::string("invalid ") + std::string(label) +
+                     " coefficient sign mode " + std::to_string(mode_value)};
+}
+
 }
 
 Result<std::vector<uint8_t>> pack_coefficient_signs(std::span<const uint8_t> signs) {
@@ -57,6 +63,53 @@ Result<std::vector<uint8_t>> unpack_coefficient_signs(std::span<const uint8_t> b
     }
 
     return signs;
+}
+
+Result<std::vector<uint8_t>> pack_coefficient_sign_modes(std::span<const uint8_t> modes) {
+    const size_t packed_size = packed_coefficient_sign_mode_bytes(modes.size());
+    std::vector<uint8_t> packed(packed_size, 0);
+
+    for (size_t i = 0; i < modes.size(); ++i) {
+        if (modes[i] > kCoefficientSignModeAllNegative) {
+            return std::unexpected(Error{ErrorCode::InvalidParameter,
+                                         "coefficient sign mode is out of range"});
+        }
+        packed[i / 4] |= static_cast<uint8_t>(modes[i] << ((i % 4) * 2));
+    }
+
+    return packed;
+}
+
+Result<std::vector<uint8_t>> unpack_coefficient_sign_modes(std::span<const uint8_t> bytes,
+                                                           size_t expected_count,
+                                                           std::string_view label) {
+    const size_t expected_bytes = packed_coefficient_sign_mode_bytes(expected_count);
+    if (bytes.size() != expected_bytes) {
+        return std::unexpected(
+            Error{ErrorCode::DecodeFailed,
+                  std::string(label) + " coefficient sign mode stream size mismatch"});
+    }
+
+    std::vector<uint8_t> modes(expected_count, kCoefficientSignModeRawPacked);
+    for (size_t i = 0; i < expected_count; ++i) {
+        const uint8_t mode_value = static_cast<uint8_t>((bytes[i / 4] >> ((i % 4) * 2)) & 0x3u);
+        if (mode_value > kCoefficientSignModeAllNegative) {
+            return std::unexpected(invalid_sign_mode_error(label, mode_value));
+        }
+        modes[i] = mode_value;
+    }
+
+    const size_t used_bits_in_last_byte = (expected_count % 4) * 2;
+    if (!bytes.empty() && used_bits_in_last_byte != 0) {
+        const uint8_t valid_mask = static_cast<uint8_t>((1u << used_bits_in_last_byte) - 1u);
+        if ((bytes.back() & static_cast<uint8_t>(~valid_mask)) != 0) {
+            return std::unexpected(
+                Error{ErrorCode::DecodeFailed,
+                      std::string(label) + " coefficient sign mode stream has non-zero padding"});
+        }
+    }
+
+    return modes;
 }
 
 Result<void> write_packed_coefficient_signs(ByteWriter& writer, std::span<const uint8_t> signs) {
