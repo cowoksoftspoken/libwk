@@ -1,4 +1,4 @@
-﻿# WK
+# WK
 
 WK is an experimental still-image codec and container centered around a native `.wk` bitstream, structured `WKMETA` metadata, a small CLI toolchain, measurable image-quality analysis, and a desktop compare viewer for visual inspection.
 
@@ -56,6 +56,10 @@ What is intentionally not claimed as finished yet:
 - compression efficiency that already competes with mature JPEG/WebP/AVIF encoders
 
 ## What The Repo Looks Like Now
+
+Below is the high-level architecture graph of the `wk` codec, illustrating the relationships between the core components, coefficient streams, transforms, and metadata handling:
+
+![WK Architecture Graph](extra/113650.png)
 
 ### Codec and container
 
