@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WK Codec Studio</title>
+    <meta name="description" content="WebAssembly-powered encoder and decoder for the WK image format.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="header-title">
+                <i class="fa-solid fa-layer-group"></i>
+                <h1>WK Codec Studio</h1>
+            </div>
+            <p class="header-sub" id="version-label">WebAssembly Image Codec</p>
+        </header>
+
+        <main class="main">
+            <section id="drop-zone" class="panel drop-zone">
+                <div class="drop-inner">
+                    <i class="fa-solid fa-cloud-arrow-up drop-icon"></i>
+                    <h2>Drag & Drop an image</h2>
+                    <p>Drop a <strong>.wk</strong> file to decode, or <strong>.png / .jpg</strong> to encode</p>
+                    <input type="file" id="file-input" accept=".wk,.png,.jpg,.jpeg" hidden>
+                    <button class="btn btn-outline" id="btn-browse">
+                        <i class="fa-solid fa-folder-open"></i> Browse Files
+                    </button>
+                </div>
+            </section>
+
+            <section id="viewer" class="panel viewer hidden">
+                <div class="viewer-canvas">
+                    <canvas id="canvas"></canvas>
+                </div>
+                <aside class="sidebar">
+                    <div id="decode-info" class="sidebar-section hidden">
+                        <h3><i class="fa-solid fa-circle-info"></i> Image Information</h3>
+                        <div id="info-grid" class="info-grid"></div>
+                        <h3><i class="fa-solid fa-chart-bar"></i> Histogram</h3>
+                        <div class="histogram-wrap">
+                            <canvas id="histogram" width="256" height="80"></canvas>
+                        </div>
+                    </div>
+                    <div id="encode-info" class="sidebar-section hidden">
+                        <h3><i class="fa-solid fa-sliders"></i> Encoder Settings</h3>
+                        <div class="field">
+                            <label for="enc-mode">Mode</label>
+                            <select id="enc-mode" class="input">
+                                <option value="0">Lossy</option>
+                                <option value="1">Lossless</option>
+                            </select>
+                        </div>
+                        <div class="field" id="quality-field">
+                            <label for="enc-quality">Quality <span id="quality-val">75</span></label>
+                            <input type="range" id="enc-quality" min="1" max="100" value="75" class="slider">
+                        </div>
+                        <button class="btn btn-primary" id="btn-encode">
+                            <i class="fa-solid fa-microchip"></i> Encode to WK
+                        </button>
+                        <div id="encode-result" class="hidden">
+                            <div id="encode-stats" class="info-grid"></div>
+                            <button class="btn btn-success" id="btn-download">
+                                <i class="fa-solid fa-download"></i> Download .wk
+                            </button>
+                        </div>
+                    </div>
+                    <button class="btn btn-danger" id="btn-close">
+                        <i class="fa-solid fa-xmark"></i> Close
+                    </button>
+                </aside>
+            </section>
+        </main>
+
+        <div id="overlay" class="overlay hidden">
+            <div class="spinner"></div>
+            <p id="overlay-text">Processing...</p>
+        </div>
+    </div>
+
+    <script src="wk.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

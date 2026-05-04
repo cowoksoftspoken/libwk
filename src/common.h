@@ -69,8 +69,16 @@ namespace wk
         ErrorCode code;
         std::string message;
 
+        Error() = default;
         Error(ErrorCode c, std::string msg = {})
             : code(c), message(std::move(msg)) {}
+        Error(const Error&) = default;
+        Error(Error&&) = default;
+        Error& operator=(const Error&) = default;
+        Error& operator=(Error&&) = default;
+        bool operator==(const Error& other) const {
+            return code == other.code && message == other.message;
+        }
     };
 
     template <typename T>

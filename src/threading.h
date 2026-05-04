@@ -14,10 +14,43 @@
 // limitations under the License.
 #pragma once
 
-
 #include "common.h"
 #include <functional>
 #include <future>
+
+#ifdef __EMSCRIPTEN__
+
+namespace wk {
+
+class ThreadPool {
+public:
+    explicit ThreadPool(uint32_t = 0) {}
+    ~ThreadPool() = default;
+
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
+
+    template<typename F, typename... Args>
+    auto submit(F&& f, Args&&... args)
+        -> std::future<decltype(f(args...))> {
+        using ReturnType = decltype(f(args...));
+        std::packaged_task<ReturnType()> task(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+        );
+        auto future = task.get_future();
+        task();
+        return future;
+    }
+
+    [[nodiscard]] uint32_t num_threads() const { return 1; }
+    void wait_all() {}
+    static uint32_t default_thread_count() { return 1; }
+};
+
+}
+
+#else
+
 #include <vector>
 #include <queue>
 #include <mutex>
@@ -34,7 +67,6 @@ public:
 
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
-
 
     template<typename F, typename... Args>
     auto submit(F&& f, Args&&... args)
@@ -59,15 +91,11 @@ public:
         return future;
     }
 
-
     [[nodiscard]] uint32_t num_threads() const {
         return static_cast<uint32_t>(workers_.size());
     }
 
-
     void wait_all();
-
-
     static uint32_t default_thread_count();
 
 private:
@@ -81,3 +109,5 @@ private:
 };
 
 }
+
+#endif

@@ -24,7 +24,7 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-constexpr std::array<std::array<float, 8>, 8> kCosineTable = [] {
+const std::array<std::array<float, 8>, 8> kCosineTable = [] {
     std::array<std::array<float, 8>, 8> table{};
     for (int k = 0; k < 8; ++k) {
         for (int n = 0; n < 8; ++n) {
