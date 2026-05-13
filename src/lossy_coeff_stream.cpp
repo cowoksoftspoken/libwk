@@ -69,7 +69,8 @@ struct CoeffContextAnalysis {
 [[nodiscard]] Result<void> write_lossy_coeff_table(ByteWriter& writer,
                                                    const LossyCoeffTable& table,
                                                    int num_symbols,
-                                                   const LossyCoeffStreamConfig& config);
+                                                   const LossyCoeffStreamConfig& config,
+                                                   const LossyCoeffTable* previous_table = nullptr);
 [[nodiscard]] Result<void> write_coeff_context_stream(ByteWriter& writer,
                                                       const EncodedCoeffContextStream& stream,
                                                       const LossyCoeffTable& table,
@@ -189,9 +190,10 @@ struct CoeffContextAnalysis {
 
 [[nodiscard]] Result<size_t> serialized_lossy_coeff_table_size(const LossyCoeffTable& table,
                                                                int num_symbols,
-                                                               const LossyCoeffStreamConfig& config) {
+                                                               const LossyCoeffStreamConfig& config,
+                                                               const LossyCoeffTable* previous_table) {
     ByteWriter writer;
-    auto written = write_lossy_coeff_table(writer, table, num_symbols, config);
+    auto written = write_lossy_coeff_table(writer, table, num_symbols, config, previous_table);
     if (!written) {
         return std::unexpected(written.error());
     }
@@ -256,9 +258,10 @@ struct CoeffContextAnalysis {
 [[nodiscard]] Result<void> write_lossy_coeff_table(ByteWriter& writer,
                                                    const LossyCoeffTable& table,
                                                    int num_symbols,
-                                                   const LossyCoeffStreamConfig& config) {
+                                                   const LossyCoeffStreamConfig& config,
+                                                   const LossyCoeffTable* previous_table) {
     if (config.adaptive_coefficient_tables) {
-        return write_coefficient_table(writer, table, num_symbols);
+        return write_coefficient_table(writer, table, num_symbols, previous_table);
     }
     return write_legacy_coeff_table(writer, table, num_symbols);
 }
@@ -571,9 +574,10 @@ struct CoeffContextAnalysis {
 [[nodiscard]] Result<LossyCoeffTable> read_lossy_coeff_table(
     ByteReader& reader,
     const SymbolCoding& coding,
-    const LossyCoeffStreamConfig& config) {
+    const LossyCoeffStreamConfig& config,
+    const LossyCoeffTable* previous_table) {
     if (config.adaptive_coefficient_tables) {
-        return read_coefficient_table(reader, coding.num_symbols, "lossy");
+        return read_coefficient_table(reader, coding.num_symbols, "lossy", previous_table);
     }
 
     auto first_read = reader.read_u16();
@@ -711,6 +715,8 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
         bool use_sparse_mode = false;
         LossyCoeffTable selected_table = raw_table;
         EncodedCoeffContextStream selected_stream = std::move(*raw_stream);
+        const LossyCoeffTable* previous_table =
+            (!config.use_table_bank && !tables.empty()) ? &tables.back() : nullptr;
 
         if (config.use_significance_maps) {
             auto sparse_counts = build_plane_counts(blocks, spans, coeff_index, coding, true);
@@ -726,7 +732,8 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
                 return std::unexpected(sparse_stream.error());
             }
 
-            auto raw_table_size = serialized_lossy_coeff_table_size(raw_table, coding.num_symbols, raw_config);
+            auto raw_table_size = serialized_lossy_coeff_table_size(raw_table, coding.num_symbols, raw_config,
+                                                                    previous_table);
             if (!raw_table_size) {
                 return std::unexpected(raw_table_size.error());
             }
@@ -734,7 +741,8 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
             if (!raw_stream_size) {
                 return std::unexpected(raw_stream_size.error());
             }
-            auto sparse_table_size = serialized_lossy_coeff_table_size(sparse_table, coding.num_symbols, sparse_config);
+            auto sparse_table_size = serialized_lossy_coeff_table_size(sparse_table, coding.num_symbols, sparse_config,
+                                                                       previous_table);
             if (!sparse_table_size) {
                 return std::unexpected(sparse_table_size.error());
             }
@@ -778,12 +786,15 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
         }
     }
 
+    const LossyCoeffTable* previous_table = nullptr;
     for (size_t context_index = 0; context_index < tables.size(); ++context_index) {
         if (!config.use_table_bank) {
-            auto table_result = write_lossy_coeff_table(writer, tables[context_index], coding.num_symbols, config);
+            auto table_result = write_lossy_coeff_table(writer, tables[context_index], coding.num_symbols, config,
+                                                        previous_table);
             if (!table_result) {
                 return std::unexpected(table_result.error());
             }
+            previous_table = &tables[context_index];
         }
         auto write_result = write_coeff_context_stream(writer, streams[context_index],
                                                        tables[context_index], coding, config);
@@ -874,6 +885,9 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
         EncodedCoeffContextStream selected_cb_stream = std::move(*raw_cb_stream);
         EncodedCoeffContextStream selected_cr_stream = std::move(*raw_cr_stream);
 
+        const LossyCoeffTable* previous_table =
+            (!config.use_table_bank && !tables.empty()) ? &tables.back() : nullptr;
+
         if (config.use_significance_maps) {
             auto sparse_counts = build_chroma_counts(cb_blocks, cr_blocks, spans, coeff_index, coding, true);
             LossyCoeffTable sparse_table;
@@ -893,7 +907,8 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
                 return std::unexpected(sparse_cr_stream.error());
             }
 
-            auto raw_table_size = serialized_lossy_coeff_table_size(raw_table, coding.num_symbols, raw_config);
+            auto raw_table_size = serialized_lossy_coeff_table_size(raw_table, coding.num_symbols, raw_config,
+                                                                    previous_table);
             if (!raw_table_size) {
                 return std::unexpected(raw_table_size.error());
             }
@@ -905,7 +920,8 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
             if (!raw_cr_stream_size) {
                 return std::unexpected(raw_cr_stream_size.error());
             }
-            auto sparse_table_size = serialized_lossy_coeff_table_size(sparse_table, coding.num_symbols, sparse_config);
+            auto sparse_table_size = serialized_lossy_coeff_table_size(sparse_table, coding.num_symbols, sparse_config,
+                                                                       previous_table);
             if (!sparse_table_size) {
                 return std::unexpected(sparse_table_size.error());
             }
@@ -962,12 +978,15 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
         }
     }
 
+    const LossyCoeffTable* previous_table = nullptr;
     for (size_t context_index = 0; context_index < tables.size(); ++context_index) {
         if (!config.use_table_bank) {
-            auto table_result = write_lossy_coeff_table(writer, tables[context_index], coding.num_symbols, config);
+            auto table_result = write_lossy_coeff_table(writer, tables[context_index], coding.num_symbols, config,
+                                                        previous_table);
             if (!table_result) {
                 return std::unexpected(table_result.error());
             }
+            previous_table = &tables[context_index];
         }
         auto write_cb = write_coeff_context_stream(writer, cb_streams[context_index],
                                                    tables[context_index], coding, config);
@@ -1033,8 +1052,10 @@ Result<std::vector<DctBlockI16>> decode_lossy_plane_payload(
         return blocks;
     }
 
+    std::optional<LossyCoeffTable> previous_table;
     for (int coeff_index = 0; coeff_index < coeff_limit; ++coeff_index) {
-        auto table = read_lossy_coeff_table(reader, coding, config);
+        auto table = read_lossy_coeff_table(reader, coding, config,
+                                            previous_table ? &*previous_table : nullptr);
         if (!table) {
             return std::unexpected(table.error());
         }
@@ -1045,6 +1066,7 @@ Result<std::vector<DctBlockI16>> decode_lossy_plane_payload(
         if (!stream) {
             return std::unexpected(stream.error());
         }
+        previous_table = *table;
     }
 
     return blocks;
@@ -1117,8 +1139,10 @@ Result<DecodedLossyChromaPayload> decode_lossy_chroma_payload(
         return payload;
     }
 
+    std::optional<LossyCoeffTable> previous_table;
     for (int coeff_index = 0; coeff_index < coeff_limit; ++coeff_index) {
-        auto table = read_lossy_coeff_table(reader, coding, config);
+        auto table = read_lossy_coeff_table(reader, coding, config,
+                                            previous_table ? &*previous_table : nullptr);
         if (!table) {
             return std::unexpected(table.error());
         }
@@ -1138,6 +1162,8 @@ Result<DecodedLossyChromaPayload> decode_lossy_chroma_payload(
         if (!cr_stream) {
             return std::unexpected(cr_stream.error());
         }
+
+        previous_table = *table;
     }
 
     return payload;

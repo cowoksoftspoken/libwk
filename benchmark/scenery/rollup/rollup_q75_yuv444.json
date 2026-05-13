@@ -5,7 +5,7 @@
     "overall":  {
                     "key":  "scenery",
                     "count":  3,
-                    "total_wk_bytes":  1218597,
+                    "total_wk_bytes":  1218362,
                     "avg_psnr":  36.6665,
                     "avg_ssim":  0.947197,
                     "avg_chroma_psnr":  46.0237,
@@ -16,7 +16,7 @@
                            {
                                "key":  "scenery",
                                "count":  3,
-                               "total_wk_bytes":  1218597,
+                               "total_wk_bytes":  1218362,
                                "avg_psnr":  36.6665,
                                "avg_ssim":  0.947197,
                                "avg_chroma_psnr":  46.0237,
@@ -28,7 +28,7 @@
                                {
                                    "key":  "balanced",
                                    "count":  2,
-                                   "total_wk_bytes":  980351,
+                                   "total_wk_bytes":  980142,
                                    "avg_psnr":  37.6834,
                                    "avg_ssim":  0.96896,
                                    "avg_chroma_psnr":  48.4699,
@@ -38,7 +38,7 @@
                                {
                                    "key":  "bright",
                                    "count":  1,
-                                   "total_wk_bytes":  238246,
+                                   "total_wk_bytes":  238220,
                                    "avg_psnr":  34.6326,
                                    "avg_ssim":  0.90366899999999994,
                                    "avg_chroma_psnr":  41.1312,
@@ -53,7 +53,7 @@
                                       "summary":  {
                                                       "key":  "scenery|balanced",
                                                       "count":  2,
-                                                      "total_wk_bytes":  980351,
+                                                      "total_wk_bytes":  980142,
                                                       "avg_psnr":  37.6834,
                                                       "avg_ssim":  0.96896,
                                                       "avg_chroma_psnr":  48.4699,
@@ -67,7 +67,7 @@
                                       "summary":  {
                                                       "key":  "scenery|bright",
                                                       "count":  1,
-                                                      "total_wk_bytes":  238246,
+                                                      "total_wk_bytes":  238220,
                                                       "avg_psnr":  34.6326,
                                                       "avg_ssim":  0.90366899999999994,
                                                       "avg_chroma_psnr":  41.1312,

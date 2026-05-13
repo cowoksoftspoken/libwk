@@ -25,15 +25,18 @@ enum class CoeffTableEncoding : uint8_t {
     SparsePairs = 2,
     DenseRangeU8 = 3,
     SparsePairsU8 = 4,
+    ReusePrevious = 5,
 };
 
 using LossyCoeffTable = RansTable<RANS_PRECISION_BITS>;
 
 [[nodiscard]] Result<void> write_coefficient_table(ByteWriter& writer,
                                                    const LossyCoeffTable& table,
-                                                   int num_symbols);
+                                                   int num_symbols,
+                                                   const LossyCoeffTable* previous_table = nullptr);
 [[nodiscard]] Result<LossyCoeffTable> read_coefficient_table(ByteReader& reader,
                                                              int num_symbols,
-                                                             std::string_view label);
+                                                             std::string_view label,
+                                                             const LossyCoeffTable* previous_table = nullptr);
 
 }

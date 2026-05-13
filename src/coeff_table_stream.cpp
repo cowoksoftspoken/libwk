@@ -58,14 +58,31 @@ namespace {
     return true;
 }
 
+[[nodiscard]] bool tables_match_exactly(const LossyCoeffTable& lhs,
+                                        const LossyCoeffTable& rhs,
+                                        int num_symbols) {
+    for (int symbol = 0; symbol < num_symbols; ++symbol) {
+        if (lhs.symbol(symbol).freq != rhs.symbol(symbol).freq) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }
 
 Result<void> write_coefficient_table(ByteWriter& writer,
                                      const LossyCoeffTable& table,
-                                     int num_symbols) {
+                                     int num_symbols,
+                                     const LossyCoeffTable* previous_table) {
     if (num_symbols <= 0) {
         return std::unexpected(Error{ErrorCode::InvalidParameter,
                                      "coefficient table symbol count must be positive"});
+    }
+
+    if (previous_table != nullptr && tables_match_exactly(table, *previous_table, num_symbols)) {
+        writer.write_u8(static_cast<uint8_t>(CoeffTableEncoding::ReusePrevious));
+        return {};
     }
 
     const std::vector<int> nonzero_symbols = collect_nonzero_symbols(table, num_symbols);
@@ -171,7 +188,8 @@ Result<void> write_coefficient_table(ByteWriter& writer,
 
 Result<LossyCoeffTable> read_coefficient_table(ByteReader& reader,
                                                int num_symbols,
-                                               std::string_view label) {
+                                               std::string_view label,
+                                               const LossyCoeffTable* previous_table) {
     if (num_symbols <= 0) {
         return std::unexpected(
             Error{ErrorCode::InvalidParameter, "coefficient table symbol count must be positive"});
@@ -184,6 +202,12 @@ Result<LossyCoeffTable> read_coefficient_table(ByteReader& reader,
 
     std::vector<uint32_t> counts(static_cast<size_t>(num_symbols), 0);
     switch (static_cast<CoeffTableEncoding>(*encoding)) {
+    case CoeffTableEncoding::ReusePrevious: {
+        if (previous_table == nullptr) {
+            return std::unexpected(invalid_table_error(label, "reuses a missing previous table"));
+        }
+        return *previous_table;
+    }
     case CoeffTableEncoding::SingleSymbol: {
         auto symbol = reader.read_u16();
         if (!symbol) {

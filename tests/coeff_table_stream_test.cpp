@@ -32,6 +32,15 @@ LossyCoeffTable make_table(const std::initializer_list<std::pair<int, uint32_t>>
     return table;
 }
 
+void expect_tables_equal(const LossyCoeffTable& actual,
+                         const LossyCoeffTable& expected,
+                         int num_symbols) {
+    for (int symbol = 0; symbol < num_symbols; ++symbol) {
+        EXPECT_EQ(actual.symbol(symbol).freq, expected.symbol(symbol).freq)
+            << "symbol " << symbol;
+    }
+}
+
 }
 
 TEST(CoeffTableStreamTest, SingleSymbolRoundTrip) {
@@ -139,6 +148,36 @@ TEST(CoeffTableStreamTest, FallsBackToSparsePairsU16ForWideFrequencies) {
     for (int i = 0; i < kNumSymbols; ++i) {
         EXPECT_EQ(parsed->symbol(i).freq, table.symbol(i).freq);
     }
+}
+
+TEST(CoeffTableStreamTest, ReusesPreviousTableWhenFrequenciesMatch) {
+    constexpr int kNumSymbols = 32;
+    auto table = make_table({{2, 1}, {7, 1}, {19, 1}}, kNumSymbols);
+
+    ByteWriter writer;
+    auto written = write_coefficient_table(writer, table, kNumSymbols, &table);
+    ASSERT_TRUE(written.has_value()) << written.error().message;
+
+    const auto bytes = writer.finish();
+    ASSERT_EQ(bytes.size(), 1u);
+    EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableEncoding::ReusePrevious));
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table(reader, kNumSymbols, "unit", &table);
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+    expect_tables_equal(*parsed, table, kNumSymbols);
+}
+
+TEST(CoeffTableStreamTest, RejectsReuseWithoutPreviousTable) {
+    ByteWriter writer;
+    writer.write_u8(static_cast<uint8_t>(CoeffTableEncoding::ReusePrevious));
+    const auto bytes = writer.finish();
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table(reader, 8, "unit");
+    ASSERT_FALSE(parsed.has_value());
+    EXPECT_EQ(parsed.error().code, ErrorCode::RansError);
+    EXPECT_NE(parsed.error().message.find("missing previous table"), std::string::npos);
 }
 
 TEST(CoeffTableStreamTest, RejectsUnknownEncoding) {
