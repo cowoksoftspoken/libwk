@@ -24,6 +24,7 @@ struct LossyCoeffStreamConfig {
     bool adaptive_coefficient_tables = true;
     bool split_magnitude_signs = false;
     bool use_table_bank = false;
+    bool use_table_cluster_selection = false;
     bool elide_single_symbol_streams = false;
     bool use_significance_maps = false;
     bool use_adaptive_sign_streams = false;

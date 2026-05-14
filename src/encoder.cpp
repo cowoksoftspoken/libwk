@@ -1011,6 +1011,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
 
     LossyCoeffStreamConfig bank_coeff_config = selected_coeff_config;
     bank_coeff_config.use_table_bank = true;
+    bank_coeff_config.use_table_cluster_selection = true;
 
     auto y_banked_coeff_payload = encode_lossy_plane_payload(y_quantized_blocks, y_spans, y_max_coeff_span, bank_coeff_config);
     if (!y_banked_coeff_payload) {
@@ -1055,6 +1056,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
 
     LossyCoeffStreamConfig elided_coeff_config = selected_coeff_config;
     elided_coeff_config.use_table_bank = use_coefficient_table_bank;
+    elided_coeff_config.use_table_cluster_selection = use_coefficient_table_bank;
     elided_coeff_config.elide_single_symbol_streams = true;
 
     auto y_elided_coeff_payload = encode_lossy_plane_payload(y_quantized_blocks, y_spans, y_max_coeff_span, elided_coeff_config);
@@ -1125,6 +1127,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
 
     LossyCoeffStreamConfig significance_coeff_config = selected_coeff_config;
     significance_coeff_config.use_table_bank = use_coefficient_table_bank;
+    significance_coeff_config.use_table_cluster_selection = use_coefficient_table_bank;
     significance_coeff_config.elide_single_symbol_streams = use_elide_single_symbol_streams;
     significance_coeff_config.use_significance_maps = true;
 
@@ -1203,6 +1206,7 @@ static Result<TileEncodeResult> encode_lossy_tile(
     if (use_split_magnitude_signs) {
         LossyCoeffStreamConfig sign_mode_coeff_config = selected_coeff_config;
         sign_mode_coeff_config.use_table_bank = use_coefficient_table_bank;
+        sign_mode_coeff_config.use_table_cluster_selection = use_coefficient_table_bank;
         sign_mode_coeff_config.elide_single_symbol_streams = use_elide_single_symbol_streams;
         sign_mode_coeff_config.use_significance_maps = use_coefficient_significance_maps;
         sign_mode_coeff_config.use_adaptive_sign_streams = true;

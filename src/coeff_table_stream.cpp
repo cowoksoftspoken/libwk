@@ -35,6 +35,15 @@ namespace {
     return symbols;
 }
 
+[[nodiscard]] std::vector<uint32_t> collect_exact_counts(const LossyCoeffTable& table,
+                                                         int num_symbols) {
+    std::vector<uint32_t> counts(static_cast<size_t>(num_symbols), 0);
+    for (int symbol = 0; symbol < num_symbols; ++symbol) {
+        counts[static_cast<size_t>(symbol)] = table.symbol(symbol).freq;
+    }
+    return counts;
+}
+
 [[nodiscard]] Result<void> validate_exact_counts(const std::vector<uint32_t>& counts,
                                                  std::string_view label) {
     uint64_t total = 0;
@@ -67,6 +76,27 @@ namespace {
         }
     }
     return true;
+}
+
+[[nodiscard]] bool collect_delta_symbols_i8(
+    const LossyCoeffTable& table,
+    const LossyCoeffTable& previous_table,
+    int num_symbols,
+    std::vector<std::pair<int, int>>& deltas) {
+    deltas.clear();
+    for (int symbol = 0; symbol < num_symbols; ++symbol) {
+        const int delta = static_cast<int>(table.symbol(symbol).freq) -
+                          static_cast<int>(previous_table.symbol(symbol).freq);
+        if (delta == 0) {
+            continue;
+        }
+        if (delta < std::numeric_limits<int8_t>::min() ||
+            delta > std::numeric_limits<int8_t>::max()) {
+            return false;
+        }
+        deltas.emplace_back(symbol, delta);
+    }
+    return !deltas.empty();
 }
 
 }
@@ -110,6 +140,10 @@ Result<void> write_coefficient_table(ByteWriter& writer,
         return true;
     }();
     const bool sparse_fits_u8 = frequencies_fit_in_u8(table, nonzero_symbols);
+    std::vector<std::pair<int, int>> delta_symbols;
+    const bool delta_fits_i8 =
+        previous_table != nullptr &&
+        collect_delta_symbols_i8(table, *previous_table, num_symbols, delta_symbols);
 
     if (nonzero_symbols.size() > std::numeric_limits<uint16_t>::max()) {
         return std::unexpected(Error{ErrorCode::InvalidParameter,
@@ -140,6 +174,12 @@ Result<void> write_coefficient_table(ByteWriter& writer,
         candidates.push_back(Candidate{
             .encoding = CoeffTableEncoding::SparsePairsU8,
             .payload_bytes = 2u + nonzero_symbols.size() * 3u,
+        });
+    }
+    if (delta_fits_i8) {
+        candidates.push_back(Candidate{
+            .encoding = CoeffTableEncoding::DeltaSparseI8,
+            .payload_bytes = 2u + delta_symbols.size() * 3u,
         });
     }
 
@@ -178,6 +218,13 @@ Result<void> write_coefficient_table(ByteWriter& writer,
             }
         }
         return {};
+    case CoeffTableEncoding::DeltaSparseI8:
+        writer.write_u16(static_cast<uint16_t>(delta_symbols.size()));
+        for (const auto& [symbol_index, delta] : delta_symbols) {
+            writer.write_u16(static_cast<uint16_t>(symbol_index));
+            writer.write_u8(static_cast<uint8_t>(delta & 0xFF));
+        }
+        return {};
     default:
         break;
     }
@@ -207,6 +254,48 @@ Result<LossyCoeffTable> read_coefficient_table(ByteReader& reader,
             return std::unexpected(invalid_table_error(label, "reuses a missing previous table"));
         }
         return *previous_table;
+    }
+    case CoeffTableEncoding::DeltaSparseI8: {
+        if (previous_table == nullptr) {
+            return std::unexpected(invalid_table_error(label, "uses delta coding without a previous table"));
+        }
+        counts = collect_exact_counts(*previous_table, num_symbols);
+
+        auto pair_count = reader.read_u16();
+        if (!pair_count) {
+            return std::unexpected(pair_count.error());
+        }
+        if (*pair_count == 0) {
+            return std::unexpected(invalid_table_error(label, "has zero delta pairs"));
+        }
+
+        std::vector<uint8_t> seen(static_cast<size_t>(num_symbols), 0);
+        for (uint16_t i = 0; i < *pair_count; ++i) {
+            auto symbol = reader.read_u16();
+            auto delta_byte = reader.read_u8();
+            if (!symbol || !delta_byte) {
+                return std::unexpected(Error{ErrorCode::TruncatedInput,
+                                             std::string(label) + " coefficient table is truncated"});
+            }
+            if (*symbol >= num_symbols) {
+                return std::unexpected(invalid_table_error(label, "has invalid delta symbol index"));
+            }
+            if (seen[*symbol] != 0) {
+                return std::unexpected(invalid_table_error(label, "duplicates a delta symbol"));
+            }
+            seen[*symbol] = 1;
+
+            const int delta = *delta_byte <= 127
+                ? static_cast<int>(*delta_byte)
+                : static_cast<int>(*delta_byte) - 256;
+            const int updated = static_cast<int>(counts[*symbol]) + delta;
+            if (updated < 0 ||
+                updated > static_cast<int>(LossyCoeffTable::TABLE_SIZE)) {
+                return std::unexpected(invalid_table_error(label, "has an out-of-range delta frequency"));
+            }
+            counts[*symbol] = static_cast<uint32_t>(updated);
+        }
+        break;
     }
     case CoeffTableEncoding::SingleSymbol: {
         auto symbol = reader.read_u16();

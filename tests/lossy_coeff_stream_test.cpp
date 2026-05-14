@@ -63,6 +63,11 @@ TEST(LossyCoeffStreamTest, PlanePayloadRoundTripsAcrossTableModes) {
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = false,
                                     .use_table_bank = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = false,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = false,
+                                    .use_table_bank = true,
+                                    .use_table_cluster_selection = true},
              LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = true,
@@ -122,6 +127,11 @@ TEST(LossyCoeffStreamTest, SharedChromaPayloadRoundTripsAcrossTableModes) {
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = false,
                                     .use_table_bank = true},
+             LossyCoeffStreamConfig{.use_plane_max_coeff_span = false,
+                                    .adaptive_coefficient_tables = true,
+                                    .split_magnitude_signs = false,
+                                    .use_table_bank = true,
+                                    .use_table_cluster_selection = true},
              LossyCoeffStreamConfig{.use_plane_max_coeff_span = true,
                                     .adaptive_coefficient_tables = true,
                                     .split_magnitude_signs = true,
@@ -191,6 +201,50 @@ TEST(LossyCoeffStreamTest, SharedChromaPayloadShrinksWhenPlanesShareStatistics) 
     ASSERT_TRUE(shared.has_value()) << shared.error().message;
 
     EXPECT_LT(shared->size(), independent_cb->size() + independent_cr->size());
+}
+
+TEST(LossyCoeffStreamTest, TableClusterSelectionShrinksBankedPlanePayload) {
+    std::array<DctBlockI16, 16> blocks{};
+    const std::array<int16_t, 16> coeff1 = {
+        2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, -1, -1, -1, -1
+    };
+    const std::array<int16_t, 16> coeff2 = {
+        2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, -1, -1, -1, -1, -1
+    };
+    for (size_t index = 0; index < blocks.size(); ++index) {
+        blocks[index][0] = static_cast<int16_t>((index % 5) - 2);
+        blocks[index][1] = coeff1[index];
+        blocks[index][2] = coeff2[index];
+    }
+    const std::array<uint8_t, 16> spans = {
+        3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3
+    };
+
+    const LossyCoeffStreamConfig base_config{
+        .use_plane_max_coeff_span = false,
+        .adaptive_coefficient_tables = true,
+        .split_magnitude_signs = false,
+        .use_table_bank = true,
+    };
+    const LossyCoeffStreamConfig cluster_config{
+        .use_plane_max_coeff_span = false,
+        .adaptive_coefficient_tables = true,
+        .split_magnitude_signs = false,
+        .use_table_bank = true,
+        .use_table_cluster_selection = true,
+    };
+
+    auto base_payload = encode_lossy_plane_payload(blocks, spans, 3, base_config);
+    ASSERT_TRUE(base_payload.has_value()) << base_payload.error().message;
+    auto cluster_payload = encode_lossy_plane_payload(blocks, spans, 3, cluster_config);
+    ASSERT_TRUE(cluster_payload.has_value()) << cluster_payload.error().message;
+
+    EXPECT_LT(cluster_payload->size(), base_payload->size());
+
+    ByteReader reader(*cluster_payload);
+    auto decoded = decode_lossy_plane_payload(reader, spans, 3, cluster_config);
+    ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+    expect_blocks_equal(*decoded, blocks);
 }
 
 TEST(LossyCoeffStreamTest, SingleSymbolStreamElisionShrinksSplitMagnitudePayload) {

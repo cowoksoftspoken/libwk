@@ -30,6 +30,8 @@ namespace {
 constexpr int kSignedOffset = 1024;
 constexpr int kSignedNumSymbols = 2049;
 constexpr int kMagnitudeNumSymbols = 1025;
+constexpr size_t kTableClusterCandidateLimit = 8;
+constexpr size_t kTableClusterMaxPasses = 2;
 
 struct SymbolCoding {
     int num_symbols = kSignedNumSymbols;
@@ -650,6 +652,321 @@ struct CoeffContextAnalysis {
     return counts;
 }
 
+[[nodiscard]] bool same_coeff_table(const LossyCoeffTable& lhs,
+                                    const LossyCoeffTable& rhs,
+                                    int num_symbols) {
+    for (int symbol = 0; symbol < num_symbols; ++symbol) {
+        if (lhs.symbol(symbol).freq != rhs.symbol(symbol).freq) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] uint64_t coeff_table_distance(const LossyCoeffTable& lhs,
+                                            const LossyCoeffTable& rhs,
+                                            int num_symbols) {
+    uint64_t distance = 0;
+    for (int symbol = 0; symbol < num_symbols; ++symbol) {
+        const int lhs_freq = lhs.symbol(symbol).freq;
+        const int rhs_freq = rhs.symbol(symbol).freq;
+        distance += static_cast<uint64_t>(std::abs(lhs_freq - rhs_freq));
+    }
+    return distance;
+}
+
+[[nodiscard]] std::vector<size_t> collect_table_cluster_candidates(
+    std::span<const LossyCoeffTable> tables,
+    size_t current_index,
+    int num_symbols) {
+    struct Candidate {
+        size_t index = 0;
+        uint64_t distance = 0;
+    };
+
+    std::vector<Candidate> candidates;
+    candidates.reserve(tables.size());
+    for (size_t candidate_index = 0; candidate_index < tables.size(); ++candidate_index) {
+        if (candidate_index == current_index) {
+            continue;
+        }
+        if (same_coeff_table(tables[current_index], tables[candidate_index], num_symbols)) {
+            continue;
+        }
+
+        bool already_listed = false;
+        for (const Candidate& candidate : candidates) {
+            if (same_coeff_table(tables[candidate.index], tables[candidate_index], num_symbols)) {
+                already_listed = true;
+                break;
+            }
+        }
+        if (already_listed) {
+            continue;
+        }
+
+        candidates.push_back(Candidate{
+            .index = candidate_index,
+            .distance = coeff_table_distance(tables[current_index],
+                                             tables[candidate_index],
+                                             num_symbols),
+        });
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& lhs, const Candidate& rhs) {
+                  if (lhs.distance != rhs.distance) {
+                      return lhs.distance < rhs.distance;
+                  }
+                  return lhs.index < rhs.index;
+              });
+
+    if (candidates.size() > kTableClusterCandidateLimit) {
+        candidates.resize(kTableClusterCandidateLimit);
+    }
+
+    std::vector<size_t> indices;
+    indices.reserve(candidates.size());
+    for (const Candidate& candidate : candidates) {
+        indices.push_back(candidate.index);
+    }
+    return indices;
+}
+
+[[nodiscard]] bool table_supports_counts(const LossyCoeffTable& table,
+                                         std::span<const uint32_t> counts) {
+    for (size_t symbol = 0; symbol < counts.size(); ++symbol) {
+        if (counts[symbol] == 0) {
+            continue;
+        }
+        if (table.symbol(static_cast<int>(symbol)).freq == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] Result<size_t> serialized_plane_bank_payload_size(
+    std::span<const LossyCoeffTable> tables,
+    std::span<const EncodedCoeffContextStream> streams,
+    const SymbolCoding& coding,
+    const LossyCoeffStreamConfig& config) {
+    ByteWriter writer;
+    auto bank_result = write_coefficient_table_bank(writer, tables, coding.num_symbols);
+    if (!bank_result) {
+        return std::unexpected(bank_result.error());
+    }
+    for (size_t context_index = 0; context_index < tables.size(); ++context_index) {
+        auto stream_result = write_coeff_context_stream(writer, streams[context_index],
+                                                        tables[context_index], coding, config);
+        if (!stream_result) {
+            return std::unexpected(stream_result.error());
+        }
+    }
+    return writer.size();
+}
+
+[[nodiscard]] Result<size_t> serialized_chroma_bank_payload_size(
+    std::span<const LossyCoeffTable> tables,
+    std::span<const EncodedCoeffContextStream> cb_streams,
+    std::span<const EncodedCoeffContextStream> cr_streams,
+    const SymbolCoding& coding,
+    const LossyCoeffStreamConfig& config) {
+    ByteWriter writer;
+    auto bank_result = write_coefficient_table_bank(writer, tables, coding.num_symbols);
+    if (!bank_result) {
+        return std::unexpected(bank_result.error());
+    }
+    for (size_t context_index = 0; context_index < tables.size(); ++context_index) {
+        auto cb_result = write_coeff_context_stream(writer, cb_streams[context_index],
+                                                    tables[context_index], coding, config);
+        if (!cb_result) {
+            return std::unexpected(cb_result.error());
+        }
+        auto cr_result = write_coeff_context_stream(writer, cr_streams[context_index],
+                                                    tables[context_index], coding, config);
+        if (!cr_result) {
+            return std::unexpected(cr_result.error());
+        }
+    }
+    return writer.size();
+}
+
+[[nodiscard]] Result<void> optimize_plane_table_clusters(
+    std::span<const DctBlockI16> blocks,
+    std::span<const uint8_t> spans,
+    std::span<LossyCoeffTable> tables,
+    std::span<EncodedCoeffContextStream> streams,
+    const SymbolCoding& coding,
+    const LossyCoeffStreamConfig& config) {
+    if (!config.use_table_bank || !config.use_table_cluster_selection || tables.size() < 2) {
+        return {};
+    }
+
+    auto best_payload_size = serialized_plane_bank_payload_size(tables, streams, coding, config);
+    if (!best_payload_size) {
+        return std::unexpected(best_payload_size.error());
+    }
+
+    for (size_t pass = 0; pass < kTableClusterMaxPasses; ++pass) {
+        bool changed = false;
+        for (size_t context_index = 0; context_index < tables.size(); ++context_index) {
+            const std::vector<size_t> candidate_indices =
+                collect_table_cluster_candidates(tables, context_index, coding.num_symbols);
+            if (candidate_indices.empty()) {
+                continue;
+            }
+
+            const bool use_significance_map = streams[context_index].use_significance_map;
+            const CoeffContextAnalysis analysis =
+                analyze_coeff_context(blocks, spans, static_cast<int>(context_index),
+                                      use_significance_map);
+            if (analysis.active_blocks == 0) {
+                continue;
+            }
+            const std::vector<uint32_t> counts = build_plane_counts(
+                blocks, spans, static_cast<int>(context_index), coding, use_significance_map);
+
+            const LossyCoeffTable original_table = tables[context_index];
+            const EncodedCoeffContextStream original_stream = streams[context_index];
+            LossyCoeffTable best_table = original_table;
+            EncodedCoeffContextStream best_stream = original_stream;
+
+            for (size_t candidate_index : candidate_indices) {
+                if (!table_supports_counts(tables[candidate_index], counts)) {
+                    continue;
+                }
+                auto candidate_stream = encode_coeff_context_stream(
+                    blocks, spans, static_cast<int>(context_index), analysis,
+                    tables[candidate_index], coding, config, use_significance_map);
+                if (!candidate_stream) {
+                    return std::unexpected(candidate_stream.error());
+                }
+
+                tables[context_index] = tables[candidate_index];
+                streams[context_index] = std::move(*candidate_stream);
+                auto trial_payload_size =
+                    serialized_plane_bank_payload_size(tables, streams, coding, config);
+                if (!trial_payload_size) {
+                    return std::unexpected(trial_payload_size.error());
+                }
+                if (*trial_payload_size < *best_payload_size) {
+                    *best_payload_size = *trial_payload_size;
+                    best_table = tables[context_index];
+                    best_stream = streams[context_index];
+                    changed = true;
+                }
+            }
+
+            tables[context_index] = best_table;
+            streams[context_index] = std::move(best_stream);
+        }
+
+        if (!changed) {
+            break;
+        }
+    }
+
+    return {};
+}
+
+[[nodiscard]] Result<void> optimize_chroma_table_clusters(
+    std::span<const DctBlockI16> cb_blocks,
+    std::span<const DctBlockI16> cr_blocks,
+    std::span<const uint8_t> spans,
+    std::span<LossyCoeffTable> tables,
+    std::span<EncodedCoeffContextStream> cb_streams,
+    std::span<EncodedCoeffContextStream> cr_streams,
+    const SymbolCoding& coding,
+    const LossyCoeffStreamConfig& config) {
+    if (!config.use_table_bank || !config.use_table_cluster_selection || tables.size() < 2) {
+        return {};
+    }
+
+    auto best_payload_size =
+        serialized_chroma_bank_payload_size(tables, cb_streams, cr_streams, coding, config);
+    if (!best_payload_size) {
+        return std::unexpected(best_payload_size.error());
+    }
+
+    for (size_t pass = 0; pass < kTableClusterMaxPasses; ++pass) {
+        bool changed = false;
+        for (size_t context_index = 0; context_index < tables.size(); ++context_index) {
+            const std::vector<size_t> candidate_indices =
+                collect_table_cluster_candidates(tables, context_index, coding.num_symbols);
+            if (candidate_indices.empty()) {
+                continue;
+            }
+
+            const bool use_significance_map = cb_streams[context_index].use_significance_map;
+            const CoeffContextAnalysis cb_analysis =
+                analyze_coeff_context(cb_blocks, spans, static_cast<int>(context_index),
+                                      use_significance_map);
+            const CoeffContextAnalysis cr_analysis =
+                analyze_coeff_context(cr_blocks, spans, static_cast<int>(context_index),
+                                      use_significance_map);
+            if (cb_analysis.active_blocks == 0 && cr_analysis.active_blocks == 0) {
+                continue;
+            }
+            const std::vector<uint32_t> counts = build_chroma_counts(
+                cb_blocks, cr_blocks, spans, static_cast<int>(context_index), coding,
+                use_significance_map);
+
+            const LossyCoeffTable original_table = tables[context_index];
+            const EncodedCoeffContextStream original_cb_stream = cb_streams[context_index];
+            const EncodedCoeffContextStream original_cr_stream = cr_streams[context_index];
+            LossyCoeffTable best_table = original_table;
+            EncodedCoeffContextStream best_cb_stream = original_cb_stream;
+            EncodedCoeffContextStream best_cr_stream = original_cr_stream;
+
+            for (size_t candidate_index : candidate_indices) {
+                if (!table_supports_counts(tables[candidate_index], counts)) {
+                    continue;
+                }
+                auto candidate_cb_stream = encode_coeff_context_stream(
+                    cb_blocks, spans, static_cast<int>(context_index), cb_analysis,
+                    tables[candidate_index], coding, config, use_significance_map);
+                if (!candidate_cb_stream) {
+                    return std::unexpected(candidate_cb_stream.error());
+                }
+
+                auto candidate_cr_stream = encode_coeff_context_stream(
+                    cr_blocks, spans, static_cast<int>(context_index), cr_analysis,
+                    tables[candidate_index], coding, config, use_significance_map);
+                if (!candidate_cr_stream) {
+                    return std::unexpected(candidate_cr_stream.error());
+                }
+
+                tables[context_index] = tables[candidate_index];
+                cb_streams[context_index] = std::move(*candidate_cb_stream);
+                cr_streams[context_index] = std::move(*candidate_cr_stream);
+                auto trial_payload_size = serialized_chroma_bank_payload_size(
+                    tables, cb_streams, cr_streams, coding, config);
+                if (!trial_payload_size) {
+                    return std::unexpected(trial_payload_size.error());
+                }
+                if (*trial_payload_size < *best_payload_size) {
+                    *best_payload_size = *trial_payload_size;
+                    best_table = tables[context_index];
+                    best_cb_stream = cb_streams[context_index];
+                    best_cr_stream = cr_streams[context_index];
+                    changed = true;
+                }
+            }
+
+            tables[context_index] = best_table;
+            cb_streams[context_index] = std::move(best_cb_stream);
+            cr_streams[context_index] = std::move(best_cr_stream);
+        }
+
+        if (!changed) {
+            break;
+        }
+    }
+
+    return {};
+}
+
 }
 
 Result<std::vector<uint8_t>> encode_lossy_plane_payload(
@@ -764,6 +1081,11 @@ Result<std::vector<uint8_t>> encode_lossy_plane_payload(
         if (coding.split_magnitude_signs && config.use_adaptive_sign_streams) {
             sign_modes.push_back(streams.back().sign_mode);
         }
+    }
+
+    auto cluster_result = optimize_plane_table_clusters(blocks, spans, tables, streams, coding, config);
+    if (!cluster_result) {
+        return std::unexpected(cluster_result.error());
     }
 
     if (config.use_significance_maps) {
@@ -952,6 +1274,12 @@ Result<std::vector<uint8_t>> encode_lossy_chroma_payload(
             cb_sign_modes.push_back(cb_streams.back().sign_mode);
             cr_sign_modes.push_back(cr_streams.back().sign_mode);
         }
+    }
+
+    auto cluster_result = optimize_chroma_table_clusters(
+        cb_blocks, cr_blocks, spans, tables, cb_streams, cr_streams, coding, config);
+    if (!cluster_result) {
+        return std::unexpected(cluster_result.error());
     }
 
     if (config.use_significance_maps) {

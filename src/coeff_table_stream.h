@@ -26,6 +26,7 @@ enum class CoeffTableEncoding : uint8_t {
     DenseRangeU8 = 3,
     SparsePairsU8 = 4,
     ReusePrevious = 5,
+    DeltaSparseI8 = 6,
 };
 
 using LossyCoeffTable = RansTable<RANS_PRECISION_BITS>;

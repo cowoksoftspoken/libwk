@@ -168,6 +168,25 @@ TEST(CoeffTableStreamTest, ReusesPreviousTableWhenFrequenciesMatch) {
     expect_tables_equal(*parsed, table, kNumSymbols);
 }
 
+TEST(CoeffTableStreamTest, DeltaEncodesSmallSequentialTableChanges) {
+    constexpr int kNumSymbols = 512;
+    auto previous = make_table({{3, 1000}, {101, 1000}, {205, 1000}, {411, 1000}}, kNumSymbols);
+    auto current = make_table({{3, 900}, {101, 1100}, {205, 1000}, {411, 1000}}, kNumSymbols);
+
+    ByteWriter writer;
+    auto written = write_coefficient_table(writer, current, kNumSymbols, &previous);
+    ASSERT_TRUE(written.has_value()) << written.error().message;
+
+    const auto bytes = writer.finish();
+    ASSERT_FALSE(bytes.empty());
+    EXPECT_EQ(bytes.front(), static_cast<uint8_t>(CoeffTableEncoding::DeltaSparseI8));
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table(reader, kNumSymbols, "unit", &previous);
+    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
+    expect_tables_equal(*parsed, current, kNumSymbols);
+}
+
 TEST(CoeffTableStreamTest, RejectsReuseWithoutPreviousTable) {
     ByteWriter writer;
     writer.write_u8(static_cast<uint8_t>(CoeffTableEncoding::ReusePrevious));
@@ -178,6 +197,21 @@ TEST(CoeffTableStreamTest, RejectsReuseWithoutPreviousTable) {
     ASSERT_FALSE(parsed.has_value());
     EXPECT_EQ(parsed.error().code, ErrorCode::RansError);
     EXPECT_NE(parsed.error().message.find("missing previous table"), std::string::npos);
+}
+
+TEST(CoeffTableStreamTest, RejectsDeltaWithoutPreviousTable) {
+    ByteWriter writer;
+    writer.write_u8(static_cast<uint8_t>(CoeffTableEncoding::DeltaSparseI8));
+    writer.write_u16(1);
+    writer.write_u16(7);
+    writer.write_u8(1);
+    const auto bytes = writer.finish();
+
+    ByteReader reader(bytes);
+    auto parsed = read_coefficient_table(reader, 32, "unit");
+    ASSERT_FALSE(parsed.has_value());
+    EXPECT_EQ(parsed.error().code, ErrorCode::RansError);
+    EXPECT_NE(parsed.error().message.find("without a previous table"), std::string::npos);
 }
 
 TEST(CoeffTableStreamTest, RejectsUnknownEncoding) {

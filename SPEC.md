@@ -122,6 +122,7 @@ FILE HEADER (magic + version)
      - `3`: dense range, followed by `first_symbol`, `last_symbol`, and dense `uint8` frequencies
      - `4`: sparse pairs, followed by `pair_count` and repeated `(symbol:uint16, frequency:uint8)` pairs
      - `5`: reuse the previous inline adaptive table in the same payload stream; no additional table bytes follow
+     - `6`: sparse delta pairs against the previous inline adaptive table, followed by `pair_count` and repeated `(symbol:uint16, delta:int8)` pairs
    - Layout tag `0x354D4843` uses the same table encodings, but only serializes coefficient contexts below the stored per-plane maximum coefficient extent.
    - Layout tag `0x364D4843` uses the same table encodings and applies the same per-plane extent omission only when syntax flag bit `1` is set.
    - If syntax flag bit `3` is set, each chroma coefficient context stores a single shared table that is reused for both the Cb and Cr entropy streams at that coefficient position.
@@ -134,6 +135,7 @@ FILE HEADER (magic + version)
      - `5`: adaptive table bank + packed 2-bit per-context bank indices
    - Table-bank signaling is only valid for layout tag `0x364D4843`, which already implies adaptive coefficient-table serialization.
    - Table encoding `5` is only valid for inline adaptive tables and only after a previous table has already been serialized in the same plane or shared-chroma payload.
+   - Table encoding `6` is only valid for inline adaptive tables and only after a previous table has already been serialized in the same plane or shared-chroma payload.
    - If syntax flag bit `5` is set and a coefficient context resolves to an adaptive single-symbol table, the context omits the `uint32` rANS byte count and rANS payload entirely.
    - If syntax flag bit `6` is set, each coefficient context with active blocks writes a presence stream before the entropy stream:
      - `0`: all active coefficients are zero

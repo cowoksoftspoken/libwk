@@ -316,11 +316,14 @@ Result<std::vector<LossyCoeffTable>> read_coefficient_table_bank(ByteReader& rea
     case CoeffTableBankMode::InlineTables: {
         std::vector<LossyCoeffTable> tables;
         tables.reserve(expected_count);
+        std::optional<LossyCoeffTable> previous_table;
         for (size_t index = 0; index < expected_count; ++index) {
-            auto table = read_coefficient_table(reader, num_symbols, label);
+            auto table = read_coefficient_table(reader, num_symbols, label,
+                                                previous_table ? &*previous_table : nullptr);
             if (!table) {
                 return std::unexpected(table.error());
             }
+            previous_table = *table;
             tables.push_back(std::move(*table));
         }
         return tables;
